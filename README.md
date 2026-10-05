@@ -28,8 +28,6 @@
   <a href="CONTRIBUTING.md">Contributing</a>
   ·
   <a href="SECURITY.md">Security</a>
-  ·
-  <a href="https://buymeacoffee.com/adhamaly">Coffee</a>
 </p>
 
 ## Why Paperear
@@ -107,9 +105,3 @@ Issues are welcome: bugs, words read wrong, ideas. Code contributions need the c
 ## Contact
 
 [hello@paperear.app](mailto:hello@paperear.app)
-
-## Coffee
-
-Paperear is made and hosted by one person, out of my own pocket. If it reads well for you, the coffee's on you.
-
-<a href="https://buymeacoffee.com/adhamaly"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="32"></a>
