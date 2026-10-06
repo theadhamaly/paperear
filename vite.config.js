@@ -6,9 +6,9 @@ import { piperFixes } from './tools/piperPatch.js'
 
 const contentSecurityPolicy = [
   "default-src 'self'",
-  "script-src 'self' 'wasm-unsafe-eval' https://cloud.umami.is",
+  "script-src 'self' 'wasm-unsafe-eval'",
   "worker-src 'self' blob:",
-  "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.elevenlabs.io https://huggingface.co https://*.huggingface.co https://*.hf.co https://cloud.umami.is https://api-gateway.umami.dev",
+  "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.elevenlabs.io https://huggingface.co https://*.huggingface.co https://*.hf.co",
   "img-src 'self' data: blob:",
   "media-src 'self' blob:",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
@@ -28,7 +28,7 @@ const cspMeta = {
 const analytics = (id) => ({
   name: 'analytics',
   apply: 'build',
-  transformIndexHtml: (html) => (id ? html.replace('</head>', `  <script defer src="https://cloud.umami.is/script.js" data-website-id="${id}"></script>\n</head>`) : html),
+  transformIndexHtml: (html) => (id ? html.replace('</head>', `  <script defer src="/u/script.js" data-website-id="${id}" data-host-url="/u"></script>\n</head>`) : html),
 })
 
 const hostingFiles = {

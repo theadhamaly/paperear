@@ -85,7 +85,7 @@ const CONTENT = {
             {
                 h: 'Counting visits',
                 p: [
-                    'Every page of Paperear uses umami to count visits, the reader included. It sets no cookies and follows no one across sites. It records the page address (never anything from your document), the site the visit came from, the browser, operating system and kind of device, the screen size, the browser language, and the country, region or city worked out from your address, which it does not keep.',
+                    'Every page of Paperear uses umami to count visits, the reader included, served from paperear.app’s own address. It sets no cookies and follows no one across sites. It records the page address (never anything from your document), the site the visit came from, the browser, operating system and kind of device, the screen size, the browser language, and the country, region or city worked out from your address, which it does not keep.',
                 ],
             },
             {
@@ -177,7 +177,7 @@ const CONTENT = {
             {
                 h: 'عدّ الزيارات',
                 p: [
-                    'كل صفحات Paperear تستخدم umami لعدّ الزيارات، بما فيها صفحة القراءة. لا يضع ملفات تعريف ارتباط ولا يتتبع أحدًا عبر المواقع. يسجّل عنوان الصفحة (ولا شيء من مستندك)، والموقع الذي جاءت منه الزيارة، والمتصفح ونظام التشغيل ونوع الجهاز، وحجم الشاشة، ولغة المتصفح، والبلد أو المنطقة أو المدينة المستنتجة من عنوانك، دون أن يحتفظ بالعنوان.',
+                    'كل صفحات Paperear تستخدم umami لعدّ الزيارات، بما فيها صفحة القراءة، ويُقدَّم من عنوان paperear.app نفسه. لا يضع ملفات تعريف ارتباط ولا يتتبع أحدًا عبر المواقع. يسجّل عنوان الصفحة (ولا شيء من مستندك)، والموقع الذي جاءت منه الزيارة، والمتصفح ونظام التشغيل ونوع الجهاز، وحجم الشاشة، ولغة المتصفح، والبلد أو المنطقة أو المدينة المستنتجة من عنوانك، دون أن يحتفظ بالعنوان.',
                 ],
             },
             {
