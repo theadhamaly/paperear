@@ -431,10 +431,34 @@
 
 
 .dock-wpm {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.3em;
     font-size: 0.72rem;
     color: var(--text-secondary);
     min-width: 5.5em;
-    text-align: center;
+}
+
+.dock-wpm__input {
+    width: 5ch;
+    box-sizing: content-box;
+    padding: 0.1rem 0.3rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm, 6px);
+    background: transparent;
+    color: var(--text-primary);
+    font: inherit;
+    text-align: right;
+}
+
+.dock-wpm__input:focus {
+    outline: none;
+    border-color: var(--accent, #5b7cfa);
+}
+
+.dock-tune__row .dock-wpm {
+    justify-self: end;
 }
 
 .dock-voice {
@@ -456,7 +480,7 @@
 
 .dock-tune__row {
     display: grid;
-    grid-template-columns: 5rem 1fr 5.5rem;
+    grid-template-columns: 5rem 1fr 8rem;
     align-items: center;
     gap: var(--space-2);
     font-size: 0.78rem;
@@ -506,7 +530,7 @@
         gap: var(--space-2);
         padding: 0.4rem var(--space-2);
     }
-    .dock-wpm {
+    .dock-speed .dock-wpm {
         display: none;
     }
 }

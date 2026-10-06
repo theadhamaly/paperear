@@ -6,7 +6,7 @@ import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
 import TextDisplay from '../components/reader/TextDisplay'
 import DocumentScroll from '../components/reader/DocumentScroll'
 import RangeBox from '../components/reader/RangeBox'
-import PlaybackControls from '../components/reader/PlaybackControls'
+import PlaybackControls, { WPM_MIN, WPM_MAX } from '../components/reader/PlaybackControls'
 import ProgressBar from '../components/reader/ProgressBar'
 import WriteSheet from '../components/reader/WriteSheet'
 import OpenSheet from '../components/reader/OpenSheet'
@@ -16,7 +16,7 @@ import Busy, { useDelayed } from '../components/Busy'
 import { askWhereToSave, catalog, download as downloadVoice, storedEntries } from '../services/piperEngine'
 import { isKeyVoice, isOpenVoice, preferredOpenVoice } from '../utils/voicePreference'
 import VOICE_PROVIDERS, { PROVIDER_FIRST } from '../data/voiceProviders'
-import { languageName, lightestVoiceFor, voiceReads } from '../utils/voiceGroups'
+import { languageName, offeredVoiceFor, voiceReads } from '../utils/voiceGroups'
 import { detectLanguage } from '../utils/languageDetector'
 import { cloudEntries, hasKey } from '../services/cloudVoices'
 
@@ -195,7 +195,7 @@ export default function ReaderView() {
         }
         if (downloadedVoices.some((v) => isOpenVoice(v.name) && voiceReads(v, docLang))) return undefined
         const timer = setTimeout(async () => {
-            const pick = lightestVoiceFor(await catalog(), docLang)
+            const pick = offeredVoiceFor(await catalog(), docLang)
             if (!pick || autoTried.current.has(docLang)) return
             autoTried.current.add(docLang)
             setAutoVoice({ lang: docLang, pick, pct: null })
@@ -783,7 +783,7 @@ export default function ReaderView() {
     }
 
     const speedBy = (d) => {
-        const newWPM = Math.max(75, Math.min(450, sequencer.currentWPM + d))
+        const newWPM = Math.max(WPM_MIN, Math.min(WPM_MAX, sequencer.currentWPM + d))
         const newRate = sequencer.wpmToRate(newWPM)
         sequencer.setCurrentWPM(newWPM)
         sequencer.setPlaybackRate(newRate)
@@ -919,6 +919,7 @@ export default function ReaderView() {
                     selectedVoice={sequencer.selectedVoice}
                     onVoicesChanged={refreshDownloadedVoices}
                     onSpeedPreset={(wpm) => speedBy(wpm - sequencer.currentWPM)}
+                    onSpeedCommit={(wpm) => speedBy(wpm - sequencer.currentWPM)}
                     pauses={pauses}
                     onPausesChange={changePauses}
                     mixedVoices={mixedVoices}

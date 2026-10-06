@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { askWhereToSave, catalog, download, importVoiceFiles, piperId, piperName, pickVoiceFolder, reconnectVoiceFolder, remove, storedIds, synthesize as piperSynthesize, voiceFolderState } from '../../services/piperEngine'
 import { describeVoice, isKeyVoice, isOpenVoice, voiceBars } from '../../utils/voicePreference'
-import { langCode, languageName, previewSample, voiceSections } from '../../utils/voiceGroups'
+import { RECOMMENDED_VOICES, langCode, languageName, previewSample, voiceSections } from '../../utils/voiceGroups'
 import { PROVIDER_FIRST } from '../../data/voiceProviders'
 import Busy, { BusyDots, useDelayed } from '../Busy'
 import './VoicePicker.css'
@@ -20,6 +20,7 @@ export function SoundMark({ seed, live = false, size = 'md' }) {
 }
 
 const isSystemVoice = (name) => !isOpenVoice(name) && !isKeyVoice(name)
+const isRecommended = (id) => (RECOMMENDED_VOICES[langCode(id)] || []).includes(id)
 
 export function VoiceGallery({ voices, selectedVoice, onVoiceChange, onVoicesChanged, canPreview, sample, docLang, onClose }) {
     const { t, i18n } = useTranslation()
@@ -201,6 +202,7 @@ export function VoiceGallery({ voices, selectedVoice, onVoiceChange, onVoicesCha
                     <span className="vp-card__title">{info.title}</span>
                     <span className="vp-card__detail">{info.kind === 'open' ? openDetail(piperId(voice.name)) : info.detail}</span>
                     <span className="vp-badge">{active ? t('voices.inUse', 'In use') : badges[info.kind]}</span>
+                    {entry && isRecommended(entry.id) && <span className="vp-badge vp-badge--recommended">{t('voices.recommended', 'Recommended')}</span>}
                 </button>
                 {canPreview && info.kind !== 'key' && (
                     <button type="button" className={'vp-card__hear' + (previewing === voice.name ? ' is-on' : '')} onClick={() => preview(voice)} aria-busy={(previewing === voice.name && previewWaiting) || undefined} aria-label={t('controls.hear', 'Hear this voice')} title={t('controls.hear', 'Hear this voice')}>
@@ -229,6 +231,7 @@ export function VoiceGallery({ voices, selectedVoice, onVoiceChange, onVoicesCha
                     <SoundMark seed={name} />
                     <span className="vp-card__title">{info.title}</span>
                     <span className="vp-card__detail">{info.kind === 'open' ? openDetail(entry.id) : info.detail}</span>
+                    {isRecommended(entry.id) && <span className="vp-badge vp-badge--recommended">{t('voices.recommended', 'Recommended')}</span>}
                 </div>
                 <div className="vp-card__foot">
                     <a className="vp-card__licence" href={entry.card} target="_blank" rel="noopener noreferrer">{entry.licence}</a>

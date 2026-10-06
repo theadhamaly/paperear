@@ -38,6 +38,13 @@ export function lightestVoiceFor(catalog, code) {
     return options[0] || null
 }
 
+export const RECOMMENDED_VOICES = { en: ['en_US-norman-medium', 'en_US-mike-medium', 'en_US-libritts_r-medium'] }
+
+export function offeredVoiceFor(catalog, code) {
+    const offered = (RECOMMENDED_VOICES[code] || []).map((id) => (catalog || []).find((v) => v.id === id)).find(Boolean)
+    return offered || lightestVoiceFor(catalog, code)
+}
+
 export const voiceReads = (voice, code) => langCode(voice.lang || (String(voice.name || '').startsWith('piper:') ? voice.name.slice(6) : '')) === code
 
 const HIDDEN_MARKS = /[ـ؜‍-‏‪-‮⁦-⁩﻿]/gu

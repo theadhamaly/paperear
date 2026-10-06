@@ -47,4 +47,8 @@ export function voiceBars(seed, count = 14) {
     return bars
 }
 
-export const usableSystemVoices = (voices) => dropAliasVoices(voices).filter((v) => !/google/i.test(`${v.name} ${v.voiceURI || ''}`))
+const NOVELTY_VOICES = new Set(['albert', 'bad news', 'bahh', 'bells', 'boing', 'bubbles', 'cellos', 'good news', 'jester', 'organ', 'superstar', 'trinoids', 'whisper', 'wobble', 'zarvox', 'deranged', 'hysterical', 'pipe organ'])
+
+const isNoveltyVoice = (name) => NOVELTY_VOICES.has(String(name || '').replace(/\s*\(.*\)\s*$/, '').trim().toLowerCase())
+
+export const usableSystemVoices = (voices) => dropAliasVoices(voices).filter((v) => !/google/i.test(`${v.name} ${v.voiceURI || ''}`) && !isNoveltyVoice(v.name))

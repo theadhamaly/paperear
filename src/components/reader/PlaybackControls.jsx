@@ -3,9 +3,70 @@ import { useTranslation } from 'react-i18next';
 import { detectLanguage } from '../../utils/languageDetector'
 import VoicePill, { VoiceGallery } from './VoicePicker'
 import Busy, { BusyDots } from '../Busy'
+import { clampWpm } from '../../utils/wpm'
 import './PlaybackControls.css'
 
 const PRESETS = [0.75, 1, 1.25, 1.5, 2]
+export const WPM_MIN = 75
+export const WPM_MAX = 450
+const WPM_COMMIT_DELAY = 650
+
+function WpmBox({ value, min, max, onCommit, label }) {
+    const [draft, setDraft] = useState(String(value))
+    const focused = useRef(false)
+    const timer = useRef(null)
+    const cancelled = useRef(false)
+    useEffect(() => {
+        if (!focused.current) setDraft(String(value))
+    }, [value])
+    useEffect(() => () => clearTimeout(timer.current), [])
+    const clearTimer = () => { clearTimeout(timer.current); timer.current = null }
+    const commit = (text) => {
+        clearTimer()
+        const next = clampWpm(text, min, max)
+        if (next === null) { setDraft(String(value)); return }
+        if (next !== value) onCommit(next)
+        setDraft(String(next))
+    }
+    const scheduleCommit = (text) => {
+        clearTimer()
+        timer.current = setTimeout(() => commit(text), WPM_COMMIT_DELAY)
+    }
+    const handleChange = (e) => {
+        const text = e.target.value
+        setDraft(text)
+        if (e.nativeEvent.inputType === undefined) scheduleCommit(text)
+    }
+    const handleKeyDown = (e) => {
+        if (e.key === 'Enter') { e.currentTarget.blur() }
+        else if (e.key === 'Escape') { cancelled.current = true; clearTimer(); setDraft(String(value)); e.currentTarget.blur() }
+        else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            e.preventDefault()
+            const base = clampWpm(draft, min, max) ?? value
+            const next = clampWpm(base + (e.key === 'ArrowUp' ? 5 : -5), min, max)
+            setDraft(String(next))
+            scheduleCommit(String(next))
+        }
+    }
+    return (
+        <label className="dock-wpm">
+            <input
+                type="number"
+                inputMode="numeric"
+                className="dock-wpm__input"
+                min={min}
+                max={max}
+                step={5}
+                value={draft}
+                onFocus={() => { focused.current = true }}
+                onBlur={() => { focused.current = false; if (cancelled.current) { cancelled.current = false; clearTimer(); return }; commit(draft) }}
+                onChange={handleChange}
+                onKeyDown={handleKeyDown}
+            />
+            {' '}{label}
+        </label>
+    )
+}
 const LINE_PAUSES = [0, 150, 280, 500, 800]
 const PARAGRAPH_PAUSES = [0, 400, 800, 1200, 2000]
 
@@ -34,6 +95,7 @@ export default function PlaybackControls({
     getSeekHoldHandlers,
     onVoicesChanged,
     onSpeedPreset,
+    onSpeedCommit,
     pauses,
     onPausesChange,
     mixedVoices,
@@ -80,11 +142,11 @@ export default function PlaybackControls({
                         <input type="range" min="0" max="1" step="0.02" value={volume ?? 1} onChange={onVolumeChange} />
                         <span className="dock-tune__value">{Math.round((volume ?? 1) * 100)}%</span>
                     </label>
-                    <label className="dock-tune__row">
+                    <div className="dock-tune__row">
                         <span>{t('controls.speed')}</span>
-                        <input type="range" min="75" max="450" step="5" value={currentWPM} onInput={onSpeedInput} onChange={onSpeedChange} />
-                        <span className="dock-tune__value">{currentWPM} {t('controls.wpm', 'WPM')}</span>
-                    </label>
+                        <input type="range" min={WPM_MIN} max={WPM_MAX} step="5" value={currentWPM} onInput={onSpeedInput} onChange={onSpeedChange} />
+                        <WpmBox value={currentWPM} min={WPM_MIN} max={WPM_MAX} onCommit={onSpeedCommit} label={t('controls.wpm', 'WPM')} />
+                    </div>
                     {pauses && onPausesChange && (
                         <div className="dock-tune__pauses">
                             <label>
@@ -150,7 +212,7 @@ export default function PlaybackControls({
                                 </button>
                             )
                         })}
-                        <span className="dock-wpm">{currentWPM} {t('controls.wpm', 'WPM')}</span>
+                        <WpmBox value={currentWPM} min={WPM_MIN} max={WPM_MAX} onCommit={onSpeedCommit} label={t('controls.wpm', 'WPM')} />
                     </div>
                 )}
 

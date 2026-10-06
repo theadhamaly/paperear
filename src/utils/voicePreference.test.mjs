@@ -49,5 +49,9 @@ console.log('voice helpers ok')
         { name: 'Irving', voiceURI: 'Microsoft Hoda - Arabic (Egypt)' },
     ]
     assert.deepEqual(usableSystemVoices(list).map((v) => v.name), ['Microsoft Hoda - Arabic (Egypt)'])
+    const novelty = ['Albert', 'Bad News', 'Bahh', 'Bells', 'Boing', 'Bubbles', 'Cellos', 'Good News', 'Jester', 'Organ', 'Superstar', 'Trinoids', 'Whisper', 'Wobble', 'Zarvox', 'Deranged', 'Hysterical', 'Pipe Organ', 'zarvox (English (United States))', 'Albert (en-US)']
+    const kept = ['Daniel', 'Eddy (English (US))', 'Flo', 'Grandma', 'Grandpa', 'Reed', 'Rocko', 'Sandy', 'Shelley', 'Samantha']
+    const apple = [...novelty, ...kept].map((name) => ({ name, voiceURI: name }))
+    assert.deepEqual(usableSystemVoices(apple).map((v) => v.name), kept)
 }
 console.log('usable system voices ok')

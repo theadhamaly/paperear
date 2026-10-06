@@ -42,6 +42,13 @@ console.log('voiceGroups ok')
     assert.equal(lightestVoiceFor(shelf, 'de').id, 'de_DE-eva_k-x_low')
     assert.equal(lightestVoiceFor(shelf, 'ar').id, 'ar_AE-emirati_female-medium')
     assert.equal(lightestVoiceFor(shelf, 'fr'), null, 'no free voice means the device voice keeps reading')
+    const { offeredVoiceFor } = await import('./voiceGroups.js')
+    assert.equal(offeredVoiceFor(shelf, 'en').id, 'en_US-sam-medium', 'no recommended voice on the shelf falls back to the lightest')
+    const norman = { id: 'en_US-norman-medium', quality: 'medium', bytes: 63.5e6 }
+    const mike = { id: 'en_US-mike-medium', quality: 'medium', bytes: 63.2e6 }
+    assert.equal(offeredVoiceFor([...shelf, mike, norman], 'en').id, 'en_US-norman-medium', 'the first recommended English voice is offered first')
+    assert.equal(offeredVoiceFor([...shelf, mike], 'en').id, 'en_US-mike-medium', 'the next recommended voice is offered when the first is absent')
+    assert.equal(offeredVoiceFor(shelf, 'de').id, 'de_DE-eva_k-x_low')
     assert.equal(voiceReads({ name: 'piper:en_US-joe-medium' }, 'en'), true)
     assert.equal(voiceReads({ name: 'Microsoft Hoda - Arabic (Egypt)', lang: 'ar-EG' }, 'ar'), true)
     assert.equal(voiceReads({ name: 'cloud:elevenlabs:x', lang: '' }, 'en'), false)

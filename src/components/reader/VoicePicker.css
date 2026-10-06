@@ -90,6 +90,13 @@
     background: var(--accent-muted);
 }
 
+.vp-badge.vp-badge--recommended {
+    color: #2a1d08;
+    border: 1px solid rgba(150, 110, 30, 0.45);
+    background: linear-gradient(135deg, #c9a23f 0%, #e4c86c 55%, #f4e4a6 100%);
+    font-weight: 600;
+}
+
 .dock-voices {
     max-width: 860px;
     max-height: min(52vh, 440px);

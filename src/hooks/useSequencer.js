@@ -810,6 +810,7 @@ export function useSequencer(initialText = '') {
         utterance.volume = Math.max(0, Math.min(1, volumeRef.current ?? 1))
 
         let chunkStartedAt = Date.now()
+        let started = false
         const speechToken = piperTokenRef.current
         let lastBoundaryAt = chunkStartedAt
         let boundariesSeen = 0
@@ -821,6 +822,11 @@ export function useSequencer(initialText = '') {
             if (!allowBoundaryUpdates.current || Date.now() < manualSeekUntilRef.current) return
             if (typeof event.charIndex !== 'number' || chunk.wordIndex === undefined) return
 
+            if (!started) {
+                started = true
+                chunkStartedAt = Date.now()
+                setBuffering(false)
+            }
             boundariesSeen += 1
             lastBoundaryAt = Date.now()
             const spokenPart = chunk.text.slice(0, event.charIndex)
@@ -846,6 +852,7 @@ export function useSequencer(initialText = '') {
         clearInterval(boundaryFallbackRef.current)
         if (chunk.wordIndex !== undefined && chunkSpokenWords > 1) {
             boundaryFallbackRef.current = setInterval(() => {
+                if (!started) return
                 if (!isPlayingRef.current || isPausedRef.current) return
                 if (keyboardSeekActiveRef.current) return
                 if (!allowBoundaryUpdates.current || Date.now() < manualSeekUntilRef.current) return
@@ -912,7 +919,7 @@ export function useSequencer(initialText = '') {
         setIsPlaying(true)
         isPlayingRef.current = true
         setCurrentUtterance(utterance)
-        utterance.onstart = () => { setBuffering(false); chunkStartedAt = Date.now(); lastBoundaryAt = chunkStartedAt }
+        utterance.onstart = () => { started = true; setBuffering(false); chunkStartedAt = Date.now(); lastBoundaryAt = chunkStartedAt }
         setBuffering(true)
         speechSynthesis.speak(utterance)
     }
