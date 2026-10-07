@@ -19,6 +19,7 @@ const OCR_MAX_WINDOW = 20
 const OCR_FIRST_WINDOW = 10
 const OCR_AHEAD = 5
 import * as docStore from '../services/docStore'
+import { track } from '../utils/track'
 import { useTranslation } from 'react-i18next'
 
 
@@ -1003,6 +1004,7 @@ export function useSequencer(initialText = '') {
     }, [text, selectedVoice])
 
     const startSequencer = (startFromIndex = 0) => {
+        track('reading-started')
         const { queue, model, safeStartIndex } = buildQueue(startFromIndex)
         spokenMapRef.current = model.spokenToDisplay
         spokenOffsetRef.current = safeStartIndex
@@ -1274,6 +1276,7 @@ export function useSequencer(initialText = '') {
 
 
     const applyDocument = (pages, totalChars, fileName) => {
+        if (fileName !== welcomeNames.en && fileName !== welcomeNames.ar) track('document-opened')
 
 
         stop()
