@@ -1,6 +1,7 @@
 import { basmalaItemsForPage } from '../utils/basmala.js'
 import { buildLexicon, correctItems, curatedEvidence, matchesCuratedSkeleton } from '../engine/scan.js'
 import { splitLayerItems } from '../utils/pageModel.js'
+import { repairUnmappedGlyphs } from '../utils/ligatures.js'
 import { cleanOcrItems, leadScript } from '../utils/ocrClean.js'
 
 const DB_NAME = 'paperear_ocr'
@@ -240,7 +241,8 @@ async function recognizeUncached(pdf, pageNum, docId) {
     const { canvas, ph, scale } = await renderPageCanvas(page)
     let content = null
     try { content = await page.getTextContent() } catch { content = null }
-    const layer = splitLayerItems(content?.items)
+    const layerItems = repairUnmappedGlyphs(content?.items)
+    const layer = splitLayerItems(layerItems)
     let items
     if (layer.junk.length >= 3 && layer.good.length >= 8) {
         await setWorkerLangs(worker, 'ara')
@@ -258,7 +260,7 @@ async function recognizeUncached(pdf, pageNum, docId) {
         const lang = known ? null : langOfItems(items)
         if (lang) docLangs.set(docId, lang)
     }
-    const sacred = await basmalaItemsForPage(page, content?.items)
+    const sacred = await basmalaItemsForPage(page, layerItems)
     if (sacred.length) items = [...items, ...sacred]
     canvas.width = 0
     canvas.height = 0

@@ -1,3 +1,5 @@
+import { NUL, repairUnmappedGlyphBoxes } from './ligatures.js'
+
 const IDENTITY = [1, 0, 0, 1, 0, 0]
 const DEFAULT_FONT_MATRIX = [0.001, 0, 0, 0.001, 0, 0]
 const CACHE_PAGES = 16
@@ -84,13 +86,14 @@ export function glyphsFromOperatorList(opList, fontOf, OPS) {
                     y: a[1],
                     u: g.unicode || '',
                     space: !(g.unicode || '').trim(),
+                    ...(g.unicode === NUL ? { em: g.width * state.fontMatrix[0] } : {}),
                 })
                 x += width + ((g.isSpace ? state.wordSpacing : 0) + state.charSpacing) * state.direction
             }
             state.x += x * hScale
         }
     }
-    return glyphs
+    return repairUnmappedGlyphBoxes(glyphs)
 }
 
 const glyphCache = new Map()

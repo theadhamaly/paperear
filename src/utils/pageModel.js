@@ -1,5 +1,6 @@
 import { buildBlockModel } from './blockModel.js'
 import { basmalaItemsForPage } from './basmala.js'
+import { repairUnmappedGlyphs } from './ligatures.js'
 
 
 
@@ -405,8 +406,9 @@ export function blockCounts(page) {
 
 export async function layerItemsForPage(page) {
     const content = await page.getTextContent()
-    const { good, junk } = splitLayerItems(content.items)
-    const layer = junk.length < 3 ? content.items : good
+    const items = repairUnmappedGlyphs(content.items)
+    const { good, junk } = splitLayerItems(items)
+    const layer = junk.length < 3 ? items : good
     const sacred = await basmalaItemsForPage(page, layer)
     return sacred.length ? [...layer, ...sacred] : layer
 }

@@ -6,17 +6,21 @@ export function wordLang(word) {
     return 'other'
 }
 
-const clip = (value, max) => (value == null ? null : String(value).slice(0, max))
+const isControl = (code) => (code < 0x20 && code !== 0x09 && code !== 0x0A && code !== 0x0D) || code === 0x7F
+
+const scrub = (value) => Array.from(String(value)).filter((ch) => !isControl(ch.charCodeAt(0))).join('')
+
+const clip = (value, max) => (value == null ? null : scrub(value).slice(0, max))
 
 export const clampReport = ({ client_id, ...report }) => ({
     ...report,
-    word: String(report.word || '').slice(0, 200),
+    word: scrub(report.word || '').slice(0, 200) || '?',
     context: clip(report.context, 600),
     note: clip(report.note, 500),
     voice: clip(report.voice, 200),
     source_kind: clip(report.source_kind, 40),
     app_build: clip(report.app_build, 40),
-    lang: String(report.lang || 'other').slice(0, 16),
+    lang: scrub(report.lang || 'other').slice(0, 16) || 'other',
 })
 
 export function buildWordReport({ words, index, voice, rate, sourceKind, appBuild, note = '', reportType = 'mispronounced' }) {
