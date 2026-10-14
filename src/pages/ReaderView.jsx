@@ -1090,6 +1090,7 @@ export default function ReaderView() {
                             jumpTick={docJumpTick}
                             restoreTick={sequencer.restoreTick}
                             ocrItemsByPage={sequencer.ocrItemsByPage}
+                            chromeSkipping={sequencer.chromeSkipping}
                             bookmarkedPage={sequencer.bookmark}
                             onToggleBookmark={sequencer.toggleBookmark}
                             isPlaying={controlIsPlaying}

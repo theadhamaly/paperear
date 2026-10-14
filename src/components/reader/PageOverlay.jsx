@@ -26,6 +26,7 @@ export default function PageOverlay({
     rtl = false,
     wordIndexBase = 0,
     band = null,
+    chromeSkipping = false,
 }) {
     const canvasRef = useRef(null)
     const [model, setModel] = useState(null)
@@ -94,8 +95,8 @@ export default function PageOverlay({
     }, [page, scale, rtl, ocrItems, tables])
 
     const align = useMemo(
-        () => (model ? alignBoxMap(model, pipelineBlocks) : null),
-        [model, pipelineBlocks],
+        () => (model ? alignBoxMap(model, pipelineBlocks, chromeSkipping) : null),
+        [model, pipelineBlocks, chromeSkipping],
     )
     const currentBoxIdx = align ? align.readingIndexToBox[currentReadingIndex] : undefined
 

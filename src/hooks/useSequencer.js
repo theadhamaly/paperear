@@ -5,7 +5,7 @@ import { applyPronunciationOverrides, buildReadingModel, loadOverrides, protecte
 import { detectLanguage } from '../utils/languageDetector'
 import { canResumeHeldAudio } from '../utils/resumePlan'
 import { documentBusyReason } from '../utils/documentBusy'
-import { buildPagesFromPdf, buildPagesFromText, buildPagesFromMarkdown, pageFromItems, recommendedBudget, rangeText, fitRange, joinPages, detectChrome, applyChromeSkip, applySkippable, detectPageNumbers, detectPromoLines, remapChromeToggleIndex, shiftWindow, firstContentPage, blockCounts, markPageSkippable } from '../utils/pageModel'
+import { buildPagesFromPdf, buildPagesFromText, buildPagesFromMarkdown, pageFromItems, recommendedBudget, rangeText, fitRange, joinPages, detectChrome, applyChromeSkip, applySkippable, detectPageNumbers, detectPromoLines, remapChromeToggleIndex, skipToggleRuns, shiftWindow, firstContentPage, blockCounts, markPageSkippable } from '../utils/pageModel'
 import { isUnreadableCover } from '../utils/ocrClean'
 import { recognizePages, prefetchPages, isScannedPage } from '../services/ocr'
 import { withTablePages, carryAnnotations } from '../utils/tablePages'
@@ -1567,14 +1567,7 @@ export function useSequencer(initialText = '') {
 
         const from = loadedPages.length ? loadedPages[0].pageNum : 1
         const to = loadedPages.length ? loadedPages[loadedPages.length - 1].pageNum : 1
-        const runs = []
-        for (const p of applyChromeSkip(docPagesRaw, docChrome)) {
-            if (p.pageNum < from || p.pageNum > to) continue
-            for (const b of (p.blocks || [])) {
-                const c = (b.text || '').trim().split(/\s+/).filter(Boolean).length
-                if (c) runs.push({ chrome: !!b.skip, count: c })
-            }
-        }
+        const runs = skipToggleRuns(docPagesRaw, docChrome, from, to)
         const newIdx = remapChromeToggleIndex(runs, currentWordIndexRef.current || 0, dropChrome, next)
 
         const withSkippable = next && entitledRef.current ? applySkippable(docPagesRaw, true) : docPagesRaw
@@ -2073,6 +2066,7 @@ export function useSequencer(initialText = '') {
         docChrome,
         hasSkippable,
         dropChrome,
+        chromeSkipping: dropChrome && entitledRef.current,
         toggleDropChrome,
         setDropChromeEntitled,
         docMeta,

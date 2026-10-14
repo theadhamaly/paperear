@@ -351,8 +351,8 @@ export function dropSuperscripts(items) {
 }
 
 export function markPageSkippable(page) {
-    const blocks = (page.blocks || []).map((b) => ({ ...b, skippable: true, skip: true }))
-    return { ...page, blocks, text: '', charCount: 0, decorative: true }
+    const blocks = (page.blocks || []).map((b) => ({ ...b, skippable: true }))
+    return { ...page, blocks, decorative: true }
 }
 
 export const isScannedPage = (p) => (p?.charCount || 0) < 20
@@ -664,6 +664,25 @@ function isPromoLine(text) {
         || /\b(?:pdf|e-?book)\s+edition\b/i.test(t)
 }
 
+
+export function skipToggleRuns(rawPages, bands, from, to) {
+    const on = applyChromeSkip(applySkippable(rawPages, true), bands)
+    const wordsIn = (s) => (s || '').trim().split(/\s+/).filter(Boolean).length
+    const runs = []
+    rawPages.forEach((raw, pi) => {
+        if (raw.pageNum < from || raw.pageNum > to) return
+        ;(raw.blocks || []).forEach((rb, bi) => {
+            const ob = on[pi].blocks[bi]
+            const total = wordsIn(rb.text)
+            if (!total) return
+            if (ob.skip) { runs.push({ chrome: true, count: total }); return }
+            const kept = ob.usedClean ? wordsIn(ob.text) : total
+            runs.push({ chrome: false, count: kept })
+            if (total > kept) runs.push({ chrome: true, count: total - kept })
+        })
+    })
+    return runs
+}
 
 export function remapChromeToggleIndex(runs, idx, currentlySkipping, willSkip) {
 

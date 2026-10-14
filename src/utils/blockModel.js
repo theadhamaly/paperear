@@ -720,7 +720,10 @@ export function buildBlockModel(rawItems, { pageWidth, pageHeight, rtl = false, 
 
 
 
-export function alignBoxMap(model, pipelineBlocks) {
+export function alignBoxMap(model, pipelineBlocks, skipping = true) {
+    if (!pipelineBlocks?.length && !skipping) {
+        return { readingIndexToBox: model.words.map((_, i) => i), skipByBox: model.words.map(() => false) }
+    }
     if (!pipelineBlocks?.length) return { readingIndexToBox: model.readingIndexToBox, skipByBox: model.words.map((w) => !!w.skip) }
     const readingIndexToBox = []
     const skipByBox = new Array(model.words.length).fill(false)

@@ -31,6 +31,7 @@ export default function DocumentScroll({
     jumpTick = 0,
     restoreTick = 0,
     ocrItemsByPage = null,
+    chromeSkipping = false,
     bookmarkedPage = null,
     onToggleBookmark = null,
     rtl = false,
@@ -464,6 +465,7 @@ export default function DocumentScroll({
                                     scale={scale}
                                     rtl={rtl}
                                     ocrItems={ocrItemsByPage?.[p.pageNum] || null}
+                                    chromeSkipping={chromeSkipping}
                                     pipelineBlocks={
                                         p.loaded ? loadedPages?.find((lp) => lp.pageNum === p.pageNum)?.blocks || null : null
                                     }
