@@ -1,4 +1,6 @@
 import { useEffect } from 'react'
+import { systemSpeech } from '../utils/systemSpeech'
+import { isNativeRangeArrow } from '../utils/shortcutTarget'
 
 /**
  * useKeyboardShortcuts — Keyboard shortcut handler extracted from App.jsx.
@@ -43,7 +45,7 @@ export function useKeyboardShortcuts(sequencer) {
                 (tag === 'INPUT' && inputType !== 'range' && inputType !== 'button' && inputType !== 'submit') ||
                 e.target.isContentEditable
 
-            if (isTypingField) return
+            if (isTypingField || isNativeRangeArrow(e)) return
 
             switch (e.code) {
                 case 'Home':
@@ -75,7 +77,7 @@ export function useKeyboardShortcuts(sequencer) {
                     if (isPausedRef.current) {
                         sequencer.resume()
                     } else if (isPlayingRef.current) {
-                        speechSynthesis.cancel()
+                        systemSpeech.cancel()
                         sequencer.pause()
                     } else {
                         sequencer.speak()

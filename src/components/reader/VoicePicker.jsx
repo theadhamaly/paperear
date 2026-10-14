@@ -36,6 +36,7 @@ export function VoiceGallery({ voices, selectedVoice, onVoiceChange, onVoicesCha
     const [heard, setHeard] = useState(false)
     const previewWaiting = useDelayed(!!previewing && !heard)
     const playing = useRef(null)
+    const working = useRef(new Set())
     const picker = useRef(null)
     const filePicker = useRef(null)
 
@@ -139,6 +140,8 @@ export function VoiceGallery({ voices, selectedVoice, onVoiceChange, onVoicesCha
     })
 
     const get = async (id) => {
+        if (working.current.has(id)) return
+        working.current.add(id)
         const whereToSave = folder.state === 'granted' ? Promise.resolve(null) : askWhereToSave(id)
         track(id, 0)
         try {
@@ -149,12 +152,15 @@ export function VoiceGallery({ voices, selectedVoice, onVoiceChange, onVoicesCha
         } catch (e) {
             setError(e.message)
         } finally {
+            working.current.delete(id)
             track(id)
         }
     }
 
     const drop = async (voice) => {
         const id = piperId(voice.name)
+        if (working.current.has(id)) return
+        working.current.add(id)
         track(id, 'removing')
         try {
             if (previewing === voice.name) stopPreview()
@@ -168,6 +174,7 @@ export function VoiceGallery({ voices, selectedVoice, onVoiceChange, onVoicesCha
         } catch (e) {
             setError(e.message)
         } finally {
+            working.current.delete(id)
             track(id)
         }
     }

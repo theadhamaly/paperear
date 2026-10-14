@@ -5,7 +5,7 @@ const DEFAULT_FONT_MATRIX = [0.001, 0, 0, 0.001, 0, 0]
 const CACHE_PAGES = 16
 const FONT_WAIT_MS = 3000
 
-const multiply = (m, n) => [
+export const multiply = (m, n) => [
     m[0] * n[0] + m[2] * n[1],
     m[1] * n[0] + m[3] * n[1],
     m[0] * n[2] + m[2] * n[3],

@@ -1,6 +1,8 @@
 import { buildBlockModel } from './blockModel.js'
 import { basmalaItemsForPage } from './basmala.js'
 import { repairUnmappedGlyphs } from './ligatures.js'
+import { dropInventedSpaces, mayHaveInventedSpaces } from './trackedSpaces.js'
+import { pageGlyphs } from './glyphBoxes.js'
 
 
 
@@ -58,6 +60,12 @@ export function joinBlocksForSpeech(blocks) {
         if (!t) continue
         if (prev) {
             const prevText = prev.text || ''
+            if (b.geo === 'cell' || prev.geo === 'cell') {
+                out += b.row === prev.row ? '\n' : '\n\n'
+                out += t
+                prev = b
+                continue
+            }
             const rowPair = b.type === 'item' && prev.type === 'item'
             const pause = b.type === 'heading' || prev.type === 'heading'
                 || b.geo === 'page-number' || prev.geo === 'page-number'
@@ -65,7 +73,8 @@ export function joinBlocksForSpeech(blocks) {
                 || /[\d٠-٩]["'»)\]]?\s*$/.test(prevText)
                 || prevText.includes('\n')
                 || /[.!?:;،؛؟)\]]["'»]?\s*$/.test(prevText)
-            out += rowPair ? '\n' : pause ? '\n\n' : ' '
+            const hardBreak = prev.hardEnd && !/^\p{Ll}/u.test(t)
+            out += rowPair || (hardBreak && !pause) ? '\n' : pause ? '\n\n' : ' '
         }
         out += t
         prev = b
@@ -261,6 +270,8 @@ function blocksFromModel(model) {
         if (!b.text.trim()) continue
         const type = b.type === 'heading' ? 'heading' : b.type === 'toc' ? 'item' : 'para'
         const entry = { type, text: b.beatText || b.text, geo: b.type }
+        if (b.row) entry.row = b.row
+        if (b.hardEnd) entry.hardEnd = true
         if (b.suggestedSkip) entry.skippable = true
         else if (b.readText && b.readText !== (b.beatText || b.text)) entry.cleanText = b.readText
         out.push(entry)
@@ -288,6 +299,7 @@ export function applySkippable(pages, drop) {
 }
 
 const hasArabicChar = (s) => /[؀-ۿ]/.test(s || '')
+const hasArabicForms = (s) => /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/.test(s || '')
 
 export function mergeGlyphRuns(items) {
     if (!items?.length) return items
@@ -302,7 +314,7 @@ export function mergeGlyphRuns(items) {
             const sizeAlike = h > 0 && Math.min(hPrev, hIt) / h > 0.75
             const sameLine = Math.abs(it.transform[5] - prev.transform[5]) <= h * 0.3
             const gap = it.transform[4] - (prev.transform[4] + (prev.width || 0))
-            if (sizeAlike && sameLine && gap > -1 && gap < h * 0.12) {
+            if (sizeAlike && sameLine && (gap > -1 || (gap > -h * 0.15 && !hasArabicForms(prev.str) && !hasArabicForms(it.str))) && gap < h * 0.12) {
                 prev.str = (prev.str || '') + (it.str || '')
                 prev.width = (it.transform[4] + (it.width || 0)) - prev.transform[4]
                 continue
@@ -338,12 +350,23 @@ export function dropSuperscripts(items) {
     })
 }
 
-export function pageFromItems(pageNum, rawItems, pageWidth, pageHeight, { rtl = false } = {}) {
+export function markPageSkippable(page) {
+    const blocks = (page.blocks || []).map((b) => ({ ...b, skippable: true, skip: true }))
+    return { ...page, blocks, text: '', charCount: 0, decorative: true }
+}
+
+export const isScannedPage = (p) => (p?.charCount || 0) < 20
+
+export function preparedItems(pageNum, rawItems) {
+    return mergeDropCaps(mergeGlyphRuns(dropSuperscripts(stripInvisibleFolios(rawItems, pageNum))))
+}
+
+export function pageFromItems(pageNum, rawItems, pageWidth, pageHeight, { rtl = false, tables = null } = {}) {
     rawItems = mergeGlyphRuns(dropSuperscripts(stripInvisibleFolios(rawItems, pageNum)))
     let blocks
     let tocPage = false
     try {
-        const model = buildBlockModel(mergeDropCaps(rawItems), { pageWidth, pageHeight, rtl })
+        const model = buildBlockModel(mergeDropCaps(rawItems), { pageWidth, pageHeight, rtl, tables })
         blocks = blocksFromModel(model)
         tocPage = !!model.tocPage
     } catch {
@@ -352,7 +375,9 @@ export function pageFromItems(pageNum, rawItems, pageWidth, pageHeight, { rtl = 
     if (!blocks || !blocks.length) blocks = extractBlocks(rawItems)
 
     const text = joinBlocksForSpeech(blocks.filter((b) => !b.skip))
-    return { pageNum, text, charCount: text.length, blocks, tocPage }
+    const entry = { pageNum, text, charCount: text.length, blocks, tocPage }
+    if (tables?.length && blocks.some((b) => b.geo === 'cell')) entry.tables = tables
+    return entry
 }
 
 
@@ -401,25 +426,34 @@ export function splitLayerItems(items) {
 export function blockCounts(page) {
     return (page.blocks || []).map((b) => b.skip
         ? { type: 'chrome', count: 0, skip: true, text: b.text }
-        : { type: b.type, count: (b.text || '').trim().split(/\s+/).filter(Boolean).length, usedClean: !!b.usedClean })
+        : { type: b.type, count: (b.text || '').trim().split(/\s+/).filter(Boolean).length, usedClean: !!b.usedClean, ...(b.geo === 'cell' ? { cell: true } : {}) })
 }
 
-export async function layerItemsForPage(page) {
+function tagMonospace(items, styles) {
+    const monospaced = new Set(Object.entries(styles || {}).filter(([, style]) => /mono/i.test(style.fontFamily || '')).map(([name]) => name))
+    if (!monospaced.size) return items
+    return items.map((it) => (monospaced.has(it.fontName) ? { ...it, mono: true } : it))
+}
+
+export async function layerItemsForPage(page, OPS) {
     const content = await page.getTextContent()
-    const items = repairUnmappedGlyphs(content.items)
+    let items = tagMonospace(repairUnmappedGlyphs(content.items), content.styles)
+    if (OPS && typeof page.getOperatorList === 'function' && items.some((it) => mayHaveInventedSpaces(it.str))) {
+        items = dropInventedSpaces(items, await pageGlyphs(page, OPS))
+    }
     const { good, junk } = splitLayerItems(items)
     const layer = junk.length < 3 ? items : good
     const sacred = await basmalaItemsForPage(page, layer)
     return sacred.length ? [...layer, ...sacred] : layer
 }
 
-export async function buildPagesFromPdf(pdf, onProgress) {
+export async function buildPagesFromPdf(pdf, onProgress, OPS) {
     const pages = []
     let totalChars = 0
     for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i)
         const [, , pw, ph] = page.view
-        const items = await layerItemsForPage(page)
+        const items = await layerItemsForPage(page, OPS)
         const entry = pageFromItems(i, items, pw, ph)
         pages.push(entry)
         totalChars += entry.charCount

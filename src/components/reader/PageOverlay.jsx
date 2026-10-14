@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { buildBlockModel, alignBoxMap, detectRtlItems } from '../../utils/blockModel'
 import { mergeDropCaps, stripInvisibleFolios, mergeGlyphRuns, dropSuperscripts, layerItemsForPage } from '../../utils/pageModel'
 import { pageGlyphs } from '../../utils/glyphBoxes'
+import { pickBandBoxes } from '../../utils/bandRects'
 import Busy from '../Busy'
 import './PageOverlay.css'
 
@@ -20,9 +21,11 @@ export default function PageOverlay({
     currentReadingIndex = -1,
     onWordClick,
     pipelineBlocks = null,
+    tables = null,
     ocrItems = null,
     rtl = false,
     wordIndexBase = 0,
+    band = null,
 }) {
     const canvasRef = useRef(null)
     const [model, setModel] = useState(null)
@@ -66,11 +69,12 @@ export default function PageOverlay({
             setPainted(false)
             const task = page.render({ canvasContext: ctx, viewport })
             renderTaskRef.current = task
-            const source = ocrItems || await layerItemsForPage(page)
+            const ops = ocrItems ? null : await import('pdfjs-dist/build/pdf.mjs').then((m) => m.OPS).catch(() => null)
+            const source = ocrItems || await layerItemsForPage(page, ops)
             if (dead) return
             const items = mergeDropCaps(mergeGlyphRuns(dropSuperscripts(stripInvisibleFolios(source, page.pageNumber))))
             const [, , pw, ph] = page.view
-            const options = { pageWidth: pw, pageHeight: ph, rtl: ocrItems ? detectRtlItems(ocrItems) : rtl }
+            const options = { pageWidth: pw, pageHeight: ph, rtl: ocrItems ? detectRtlItems(ocrItems) : rtl, tables: ocrItems ? null : tables }
             setModel(buildBlockModel(items, options))
             await task.promise.catch(() => {})
             if (!dead) setPainted(true)
@@ -87,7 +91,7 @@ export default function PageOverlay({
             dead = true
             try { renderTaskRef.current?.cancel() } catch { }
         }
-    }, [page, scale, rtl, ocrItems])
+    }, [page, scale, rtl, ocrItems, tables])
 
     const align = useMemo(
         () => (model ? alignBoxMap(model, pipelineBlocks) : null),
@@ -96,6 +100,15 @@ export default function PageOverlay({
     const currentBoxIdx = align ? align.readingIndexToBox[currentReadingIndex] : undefined
 
     const hlRef = useRef(null)
+
+    const bandFrom = band ? band.range[0] : -1
+    const bandTo = band ? band.range[1] : -1
+    const shortFrom = band?.short ? band.short[0] : -1
+    const shortTo = band?.short ? band.short[1] : -1
+    const bandBoxes = useMemo(
+        () => (model && align && bandFrom >= 0 ? pickBandBoxes(model, align, [bandFrom, bandTo], shortFrom >= 0 ? [shortFrom, shortTo] : null) : []),
+        [model, align, bandFrom, bandTo, shortFrom, shortTo],
+    )
 
     const pwv = page ? page.view[2] : 1
     const phv = page ? page.view[3] : 1
@@ -107,7 +120,7 @@ export default function PageOverlay({
         const src = canvasRef.current
         if (!hl) return
         const wd = currentBoxIdx != null && currentBoxIdx >= 0 ? model?.words?.[currentBoxIdx] : null
-        if (!wd || !src || !src.width) {
+        if (!wd || wd.foreign || !src || !src.width) {
             hl.style.display = 'none'
             return
         }
@@ -163,6 +176,18 @@ export default function PageOverlay({
     return (
         <div className={'page-overlay' + (pageDark ? ' page-overlay--dark' : '')} style={{ width: size.w, height: size.h }}>
             <canvas ref={canvasRef} className="page-overlay__canvas" />
+            <div className="page-overlay__band" aria-hidden="true">
+                {bandBoxes.map((strip, k) => {
+                    const box = cssBox(strip)
+                    return (
+                        <span
+                            key={k}
+                            className="page-overlay__band-strip"
+                            style={{ left: box.left - 3, top: box.top - 1, width: box.width + 6, height: box.height + 2 }}
+                        />
+                    )
+                })}
+            </div>
             <canvas ref={hlRef} className="page-overlay__hl" style={{ display: 'none' }} />
             <Busy active={!painted} announce={false} className="busy--over" />
             {model && align && (() => {
@@ -196,6 +221,7 @@ export default function PageOverlay({
                             )
                         })}
                         {model.words.map((wd, i) => {
+                            if (wd.foreign) return null
                             const skipped = skipByBox[i]
                             const readingIdx = boxToReading.has(i) ? boxToReading.get(i) : -1
                             const isCurrent = i === currentBox

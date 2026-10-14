@@ -1,3 +1,5 @@
+import { endsSentence } from './speechUnits.js'
+
 
 
 
@@ -145,7 +147,7 @@ export function splitQueueByScript(queue, opts = {}) {
         if (runs.length <= 1) {
             const lang = runs[0]?.script || null
             if (silenced(lang)) {
-                out.push({ ...chunk, text: '', lang, isSilent: true })
+                out.push({ ...chunk, text: '', lang, isSilent: true, skippedWords: words.length })
                 continue
             }
             const text = lang === 'ar' && words.length <= 2 ? arSpeech(chunk.text) : chunk.text
@@ -157,7 +159,7 @@ export function splitQueueByScript(queue, opts = {}) {
             const text = run.words.join(' ')
             const pause = i === runs.length - 1 ? chunk.pause : 0
             if (silenced(run.script)) {
-                out.push({ ...chunk, text: '', wordIndex: idx, lang: run.script, pause, isSilent: true })
+                out.push({ ...chunk, text: '', wordIndex: idx, lang: run.script, pause, isSilent: true, skippedWords: run.words.length })
             } else {
                 out.push({
                     ...chunk,
@@ -239,7 +241,39 @@ export function mergeShortChunks(queue, { min = 220, max = 600 } = {}) {
     return out
 }
 
-const SENTENCE_END = /[.!?؟…]["'”’)»]*$/
+export function mergeLoneShortChunks(queue, { maxWords = 2 } = {}) {
+    const countWords = (s) => s.trim().split(/\s+/).filter(Boolean).length
+    const speakable = (c) => !!c && !c.isSilent && !!c.text && c.wordIndex !== undefined
+    const adjacent = (a, b) => speakable(a) && speakable(b) && a.lang === b.lang
+        && (a.rate || 1) === (b.rate || 1) && b.wordIndex === a.wordIndex + countWords(a.text)
+    const items = [...(queue || [])]
+    const out = []
+    for (let i = 0; i < items.length; i++) {
+        const chunk = items[i]
+        if (!speakable(chunk) || countWords(chunk.text) > maxWords) { out.push(chunk); continue }
+        let nextIndex = i + 1
+        while (items[nextIndex] && items[nextIndex].isSilent) nextIndex++
+        const next = items[nextIndex]
+        if (adjacent(chunk, next)) {
+            items.splice(i + 1, nextIndex - i - 1)
+            items[i + 1] = { ...chunk, text: chunk.text + ' ' + next.text, pause: next.pause }
+            continue
+        }
+        if (!next) {
+            let lastIndex = out.length - 1
+            while (lastIndex >= 0 && out[lastIndex].isSilent) lastIndex--
+            const last = out[lastIndex]
+            if (adjacent(last, chunk)) {
+                out.length = lastIndex + 1
+                out[lastIndex] = { ...last, text: last.text + ' ' + chunk.text, pause: chunk.pause }
+                continue
+            }
+        }
+        out.push(chunk)
+    }
+    return out
+}
+
 const SOFT_BREAK = /[,;:،؛]["'”’)»]*$/
 
 export function splitLongChunks(queue, { max = 28, min = 4 } = {}) {
@@ -252,7 +286,7 @@ export function splitLongChunks(queue, { max = 28, min = 4 } = {}) {
         let soft = -1
         for (let i = 0; i < words.length; i++) {
             const length = i - start + 1
-            if (SENTENCE_END.test(words[i]) && length >= min) {
+            if (endsSentence(words, i) && length >= min) {
                 pieces.push([start, i])
                 start = i + 1
                 soft = -1

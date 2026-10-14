@@ -264,7 +264,9 @@ export default function RangePicker({ meta, suggested, pdf, docPages, onLoad, on
                             disabled={!rangeValid || !!busy}
                         >
                             {busy
-                                ? t('sequencer.ocrProgress', 'Preparing scanned pages… {{done}}/{{total}}').replace('{{done}}', busy.done).replace('{{total}}', busy.total)
+                                ? busy.total
+                                    ? t('sequencer.ocrProgress', 'Preparing scanned pages… {{done}}/{{total}}').replace('{{done}}', busy.done).replace('{{total}}', busy.total)
+                                    : t('busy.pages', 'Preparing the pages…')
                                 : rangeValid
                                     ? t('reader.loadPages', 'Load pages {{from}}–{{to}}').replace('{{from}}', nFrom).replace('{{to}}', nTo)
                                     : t('reader.loadPagesShort', 'Load pages')}

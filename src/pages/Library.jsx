@@ -14,8 +14,10 @@ export default function Library() {
     const navigate = useNavigate()
     const [docs, setDocs] = useState(null)
     const [query, setQuery] = useState('')
+    const [working, setWorking] = useState(null)
+    const [failed, setFailed] = useState(false)
 
-    const refresh = () => docStore.recentDocs().then(setDocs)
+    const refresh = () => docStore.recentDocs().then(setDocs).catch(() => setDocs((current) => current || []))
     useEffect(() => { refresh() }, [])
 
     const open = (doc) => {
@@ -27,21 +29,39 @@ export default function Library() {
     }
 
     const rename = async (doc) => {
+        if (working) return
+        setFailed(false)
         const name = window.prompt(t('library.renamePrompt'), doc.name)
         if (!name || name.trim() === doc.name) return
-        await docStore.renameDoc(doc.id, name.trim())
-        refresh()
+        setWorking(doc.id)
+        try {
+            await docStore.renameDoc(doc.id, name.trim())
+            await refresh()
+        } catch {
+            setFailed(true)
+        } finally {
+            setWorking(null)
+        }
     }
 
     const remove = async (doc) => {
+        if (working) return
+        setFailed(false)
         if (!window.confirm(t('library.confirmDelete'))) return
-        await docStore.deleteDoc(doc.id)
-        await forgetDoc(doc.id)
+        setWorking(doc.id)
         try {
-            const last = JSON.parse(localStorage.getItem('paperear_last_source') || 'null')
-            if (last?.id === doc.id) localStorage.removeItem('paperear_last_source')
-        } catch { }
-        refresh()
+            await docStore.deleteDoc(doc.id)
+            await forgetDoc(doc.id)
+            try {
+                const last = JSON.parse(localStorage.getItem('paperear_last_source') || 'null')
+                if (last?.id === doc.id) localStorage.removeItem('paperear_last_source')
+            } catch { }
+            await refresh()
+        } catch {
+            setFailed(true)
+        } finally {
+            setWorking(null)
+        }
     }
 
     const rows = filterDocs(docs || [], query)
@@ -63,6 +83,7 @@ export default function Library() {
                     placeholder={t('library.search')}
                 />
             </header>
+            {failed && <p className="library-empty" role="alert">{t('library.failed', 'That did not work. Please try again.')}</p>}
             {docs === null ? <p className="library-empty"><Busy label={t('busy.shelf', 'Loading your shelf…')} showLabel /></p> : rows.length === 0 && <p className="library-empty">{t('library.empty')}</p>}
             <ul className="library-list">
                 {rows.map((doc) => {
@@ -77,8 +98,9 @@ export default function Library() {
                                 </div>
                             </div>
                             <div className="library-actions">
-                                <button className="library-action" onClick={() => rename(doc)}>{t('library.rename')}</button>
-                                <button className="library-action library-action--delete" onClick={() => remove(doc)}>{t('library.delete')}</button>
+                                {working === doc.id && <Busy label={t('busy.working', 'Working…')} className="busy--quiet" />}
+                                <button className="library-action" onClick={() => rename(doc)} disabled={!!working}>{t('library.rename')}</button>
+                                <button className="library-action library-action--delete" onClick={() => remove(doc)} disabled={!!working}>{t('library.delete')}</button>
                             </div>
                         </li>
                     )

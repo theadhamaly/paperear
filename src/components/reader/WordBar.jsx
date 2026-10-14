@@ -113,7 +113,9 @@ export default function WordBar({
         ? t('controls.reportMissingPlaceholder', 'Type the missing word')
         : noteType === 'page'
             ? t('controls.reportPagePlaceholder', 'What is wrong on this page?')
-            : t('controls.reportPlaceholder', 'What sounds wrong?')
+            : noteType === 'highlight'
+                ? t('controls.reportHighlightPlaceholder', 'What is wrong with the highlight?')
+                : t('controls.reportPlaceholder', 'What sounds wrong?')
 
     return (
         <div
@@ -138,6 +140,11 @@ export default function WordBar({
                 onClick={() => toggleNote('missing')}
                 title={t('controls.reportMissing', 'A word is missing near here')}
             >+</button>
+            <button
+                className={`wordbar-btn wordbar-btn--band ${noteOpen && noteType === 'highlight' ? 'wordbar-btn--active' : ''}`}
+                onClick={() => toggleNote('highlight')}
+                title={t('controls.reportHighlight', 'The highlighted sentence looks wrong')}
+            >▭</button>
 
             <div className="wordbar-note" aria-hidden={!noteOpen}>
                 <input

@@ -20,6 +20,13 @@ assert.strictEqual(noted.note, 'the ظ sounds like ز', 'the note is trimmed')
 assert.strictEqual(noted.report_type, 'missing', 'the report type follows the caller')
 assert.strictEqual(buildWordReport({ words, index: 3, note: 'x'.repeat(900) }).note.length, 500, 'a runaway note is clipped to the column limit')
 
+const band = buildWordReport({ words, index: 3, reportType: 'highlight', unitText: 'Say this word لَفْظ slowly so every sound in it comes through clearly today' })
+assert.strictEqual(band.report_type, 'highlight', 'a wrong highlight reports under the existing highlight type')
+assert.strictEqual(band.context, 'Say this word لَفْظ slowly so every sound in it comes through clearly today', 'a highlight report carries the whole current unit as context')
+assert.strictEqual(buildWordReport({ words, index: 3, reportType: 'highlight' }).context, report.context, 'without a unit the nearby words stand in')
+assert.strictEqual(buildWordReport({ words, index: 3, unitText: 'ignored unit' }).context, report.context, 'other report types keep the nearby words')
+assert.strictEqual(buildWordReport({ words, index: 3, reportType: 'highlight', unitText: 'y'.repeat(900) }).context.length, 600, 'a long unit is clipped to the context limit')
+
 assert.strictEqual(buildWordReport({ words, index: 99 }), null, 'an index past the end reports nothing')
 assert.strictEqual(buildWordReport({ words: [], index: 0 }), null, 'an empty document reports nothing')
 

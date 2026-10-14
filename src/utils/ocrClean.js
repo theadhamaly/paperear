@@ -1,3 +1,6 @@
+const MARKS = /[ً-ْٰـ]/g
+const stripMarks = (str) => (str || '').replace(MARKS, '')
+
 const letterCount = (s) => ((s || '').match(/\p{L}/gu) || []).length
 const alnumCount = (s) => ((s || '').match(/[\p{L}\p{N}]/gu) || []).length
 
@@ -73,6 +76,64 @@ function isForeign(it, anchors) {
     return !((it.conf ?? 100) >= 90 && letterCount(it.str) >= 3)
 }
 
+const wordKey = (str) => stripMarks((str || '').toLowerCase()).replace(/[^\p{L}]/gu, '')
+
+export function confidentWords(itemsPerPage, { minCount = 2, minConf = 70 } = {}) {
+    const counts = new Map()
+    for (const items of itemsPerPage || [])
+        for (const it of items || []) {
+            if ((it.conf ?? 100) < minConf) continue
+            const key = wordKey(it.str)
+            if (key.length < 2) continue
+            counts.set(key, (counts.get(key) || 0) + 1)
+        }
+    const known = new Set()
+    for (const [key, n] of counts) if (n >= minCount) known.add(key)
+    return known
+}
+
+const LATIN_VOWELS = /[aeiouy]/i
+const REPEATED_LETTER = /(\p{L})\1{2,}/u
+const CONSONANT_CLUSTER = /[^aeiouy\s]{5,}/i
+const INNER_CAPITAL = /[a-z][A-Z]/
+const NOISE_SYMBOL = /[|~^_\\#<>{}=@]/
+
+export function isJunkWord(it, known, lead = '') {
+    const str = (it.str || '').trim()
+    const conf = it.conf ?? 100
+    if (conf >= 70) return false
+    const key = wordKey(str)
+    if (key && known && known.has(key)) return false
+    const script = scriptOf(str)
+    if (script === 'lat') {
+        const letters = letterCount(str)
+        if (/\d/.test(str) && letters > 0) return true
+        if (NOISE_SYMBOL.test(str)) return true
+        if (lead === 'ar' && letters <= 2) return true
+        if (letters === 1) return !/^[aAiI]$/.test(key)
+        if (letters >= 3 && !LATIN_VOWELS.test(key)) return true
+        if (conf < 50 && CONSONANT_CLUSTER.test(key)) return true
+        if (INNER_CAPITAL.test(str.replace(/^[^a-zA-Z]+/, '')) && !/^[A-Z][a-z]+[A-Z][a-z]+$/.test(str)) return true
+        if (conf < 40 && letters <= 3) return true
+        if (lead === 'ar') return conf < 50
+        return false
+    }
+    if (script === 'ar') {
+        const core = stripMarks(str).replace(/[^ء-ي]/g, '')
+        if (lead === 'lat' && core.length <= 1) return true
+        if (core.length <= 1) return conf < 50
+        if (/\p{Script=Latin}|\d/u.test(str)) return true
+        if (REPEATED_LETTER.test(core)) return true
+    }
+    return false
+}
+
+function leadOf(anchors) {
+    if (anchors.lat >= 4 && anchors.lat >= 4 * anchors.ar) return 'lat'
+    if (anchors.ar >= 4 && anchors.ar >= 4 * anchors.lat) return 'ar'
+    return ''
+}
+
 export function pageProfile(items) {
     const list = items || []
     const lines = groupLines(list)
@@ -106,15 +167,17 @@ function legacyClean(list, vouch) {
     })
 }
 
-export function cleanOcrItems(items, { vouch = () => false } = {}) {
+export function cleanOcrItems(items, { vouch = () => false, known = null } = {}) {
     const list = items || []
     if (list.some((it) => it.fontName && it.fontName !== 'ocr' && it.fontName !== 'basmala')) return legacyClean(list, vouch)
     const profile = pageProfile(list)
+    const lead = leadOf(profile.anchors)
     return list.filter((it, i) => {
         const str = (it.str || '').trim()
         if (!str) return false
         if (it.fontName === 'basmala') return true
         if (isForeign(it, profile.anchors)) return false
+        if (!vouch(str) && isJunkWord(it, known, lead)) return false
         const conf = it.conf ?? 100
         if (profile.cover) {
             if (!profile.anchoredLines[profile.lineOf[i]]) return false
@@ -133,4 +196,19 @@ export function cleanOcrItems(items, { vouch = () => false } = {}) {
         }
         return true
     })
+}
+
+const medianOf = (nums) => {
+    if (!nums.length) return 0
+    const sorted = [...nums].sort((a, b) => a - b)
+    const mid = Math.floor(sorted.length / 2)
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+}
+
+export function isUnreadableCover(items, pageNum, { maxPage = 2, minConfident = 8, confident = 70, minMedian = 55 } = {}) {
+    if (!(pageNum >= 1 && pageNum <= maxPage)) return false
+    const words = (items || []).filter((it) => (it.str || '').trim() && alnumCount(it.str) > 0)
+    const sure = words.filter((it) => (it.conf ?? 100) >= confident && alnumCount(it.str) >= 2)
+    if (sure.length < minConfident) return true
+    return medianOf(words.map((it) => it.conf ?? 100)) < minMedian
 }

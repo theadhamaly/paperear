@@ -496,3 +496,25 @@
     background: none;
     color: var(--text-secondary);
 }
+
+.reader-busy {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 12vh;
+    cursor: progress;
+    transition: background 150ms ease;
+}
+
+.reader-busy.is-shown {
+    background: color-mix(in srgb, var(--bg-primary) 78%, transparent);
+    backdrop-filter: blur(2px);
+}
+
+.reader-busy .busy--stage {
+    min-height: 0;
+    width: auto;
+}

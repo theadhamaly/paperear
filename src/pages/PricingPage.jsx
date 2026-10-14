@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import Icon from '../components/icons'
+import Busy from '../components/Busy'
 import { sendLicenceRequest } from '../services/licence'
 import './PricingPage.css'
 
@@ -135,9 +136,11 @@ function LicenceForm({ f }) {
     const set = (k) => (e) => setFields((v) => ({ ...v, [k]: e.target.value }))
     const submit = async (e) => {
         e.preventDefault()
+        if (state === 'sending') return
         setState('sending')
         setReason('')
-        const result = await sendLicenceRequest(fields)
+        let result
+        try { result = await sendLicenceRequest(fields) } catch { result = { ok: false, reason: 'server' } }
         if (result.ok) { setState('done'); return }
         setState('idle')
         setReason(result.reason)
@@ -154,7 +157,7 @@ function LicenceForm({ f }) {
             <label className="licence-form__trap" aria-hidden="true"><span>Website</span><input tabIndex="-1" autoComplete="off" value={fields.website} onChange={set('website')} /></label>
             {reason && <p className="licence-form__error" role="alert">{f.errors[reason] || f.errors.server}</p>}
             <div className="licence-form__actions">
-                <button type="submit" className="plan__btn plan__btn--primary" disabled={state === 'sending'}>{state === 'sending' ? f.sending : f.send}</button>
+                <button type="submit" className="plan__btn plan__btn--primary" disabled={state === 'sending'} aria-busy={state === 'sending' || undefined}>{state === 'sending' ? <Busy label={f.sending} showLabel announce={false} delay={0} /> : f.send}</button>
                 <span className="licence-form__privacy">{f.privacy}</span>
             </div>
         </form>

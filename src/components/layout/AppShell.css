@@ -98,6 +98,14 @@
     cursor: pointer;
 }
 
+.shell-nav-item--locked,
+.shell-nav-item--locked:hover {
+    opacity: 0.4;
+    background: none;
+    color: var(--text-secondary);
+    cursor: not-allowed;
+}
+
 /* Sidebar footer */
 .shell-nav-foot {
     margin-top: auto;
@@ -143,6 +151,7 @@
 .shell-main {
     flex: 1;
     margin-inline-start: 240px;
+    transition: margin-inline-start 180ms ease;
     min-height: 100vh;
     background: var(--bg-primary);
     display: flex;
@@ -183,4 +192,14 @@
     .shell-main {
         margin-inline-start: 60px;
     }
+}
+
+@media (min-width: 900px) {
+    .shell-main--tuned {
+        margin-inline-start: calc(240px + 360px);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .shell-main { transition: none; }
 }

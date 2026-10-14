@@ -50,6 +50,7 @@
   --overlay-current-ring-dark: rgba(199, 210, 254, 0.9);
   --overlay-current-veil: #4F46E5;
   --overlay-hover: rgba(99, 102, 241, 0.14);
+  --band-bg: rgba(99, 102, 241, 0.16);
 
   /* Physics */
   --radius-sm: 6px;
@@ -106,6 +107,7 @@
   --overlay-current-ring-dark: rgba(199, 230, 240, 0.9);
   --overlay-current-veil: #2563C7;
   --overlay-hover: rgba(37, 99, 199, 0.12);
+  --band-bg: rgba(37, 99, 199, 0.09);
 
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -160,6 +162,7 @@
   --overlay-current-ring-dark: rgba(224, 231, 255, 0.9);
   --overlay-current-veil: #5B64D8;
   --overlay-hover: rgba(165, 180, 252, 0.16);
+  --band-bg: rgba(165, 180, 252, 0.09);
 
   /* Physics */
   --radius-sm: 8px;

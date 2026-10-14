@@ -170,3 +170,56 @@ const sameSet = (a, b) => assert.deepEqual([...a].sort(), [...b].sort())
 }
 
 console.log('ocrClean ok')
+
+{
+    const { isUnreadableCover } = await import('./ocrClean.js')
+    const garbage = [
+        ...row(700, [['Xq', 31], ['lll', 22], ['Wv', 45], ['oo', 28]]),
+        ...row(650, [['Hrtk', 40], ['zz', 20], ['Plmn', 52]]),
+        ...row(600, [['Ab', 66], ['Cdefg', 61]]),
+    ]
+    assert.equal(isUnreadableCover(garbage, 1), true)
+    assert.equal(isUnreadableCover(garbage, 3), false)
+    const readable = [
+        ...row(700, [['Quiet', 93], ['Harbour', 95], ['Stories', 92], ['Of', 96]]),
+        ...row(650, [['Written', 96], ['By', 93], ['Someone', 94], ['Else', 95], ['Entirely', 91]]),
+    ]
+    assert.equal(isUnreadableCover(readable, 1), false)
+    const fewWords = row(700, [['Quiet', 93], ['Harbour', 95], ['Stories', 92]])
+    assert.equal(isUnreadableCover(fewWords, 2), true)
+    const lowMedian = Array.from({ length: 12 }, (_, i) => word('Word' + i, i < 8 ? 72 : 20, 20 + i * 50, 700))
+    assert.equal(isUnreadableCover(lowMedian, 1), false)
+    const noisy = Array.from({ length: 30 }, (_, i) => word('Word' + i, i < 9 ? 75 : 30, 20 + i * 50, 700))
+    assert.equal(isUnreadableCover(noisy, 1), true)
+    assert.equal(isUnreadableCover([], 1), true)
+}
+
+{
+    const { isJunkWord, confidentWords } = await import('./ocrClean.js')
+    const known = confidentWords([[word('harbour', 90, 0, 0), word('harbour', 88, 0, 0), word('lanterns', 91, 0, 0)]])
+    assert.ok(known.has('harbour') && !known.has('lanterns'))
+    assert.equal(isJunkWord(word('Xq7z', 40, 0, 0), known), true)
+    assert.equal(isJunkWord(word('tHxR', 45, 0, 0), known), true)
+    assert.equal(isJunkWord(word('Sd', 32, 0, 0), known), true)
+    assert.equal(isJunkWord(word('brtnks', 55, 0, 0), known), true)
+    assert.equal(isJunkWord(word('w|th', 60, 0, 0), known), true)
+    assert.equal(isJunkWord(word('the', 54, 0, 0), known), false)
+    assert.equal(isJunkWord(word('harbour', 30, 0, 0), known), false)
+    assert.equal(isJunkWord(word('Xq7z', 92, 0, 0), known), false)
+    assert.equal(isJunkWord(word('I', 60, 0, 0), known), false)
+    assert.equal(isJunkWord(word('ل', 36, 0, 0), known), true)
+    assert.equal(isJunkWord(word('ممم', 50, 0, 0), known), true)
+    assert.equal(isJunkWord(word('من', 35, 0, 0), known), false)
+    assert.equal(isJunkWord(word('كتاب', 30, 0, 0), known), false)
+    assert.equal(isJunkWord(word('ب', 36, 0, 0), known, 'lat'), true)
+
+    const page = []
+    for (let n = 0; n < 8; n++) page.push(...row(700 - n * 20, [['The', 95], ['quiet', 96], ['harbour', 94], ['lantern', 91]]))
+    page.push(...row(520, [['Sd', 32], ['harbour', 40], ['Xq7z', 38], ['ل', 50], ['lanterns', 88]]))
+    const out = kept(page, { known })
+    assert.ok(out.includes('harbour'))
+    assert.ok(out.includes('lanterns'))
+    assert.ok(!out.includes('Sd'))
+    assert.ok(!out.includes('Xq7z'))
+    assert.ok(!out.includes('ل'))
+}

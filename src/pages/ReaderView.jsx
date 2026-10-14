@@ -1,17 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, useOutletContext } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useSequencer } from '../hooks/useSequencer'
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
 import TextDisplay from '../components/reader/TextDisplay'
 import DocumentScroll from '../components/reader/DocumentScroll'
 import RangeBox from '../components/reader/RangeBox'
-import PlaybackControls, { WPM_MIN, WPM_MAX } from '../components/reader/PlaybackControls'
+import PlaybackControls from '../components/reader/PlaybackControls'
+import { WPM_MIN, WPM_MAX } from '../utils/wpm'
 import ProgressBar from '../components/reader/ProgressBar'
 import WriteSheet from '../components/reader/WriteSheet'
 import OpenSheet from '../components/reader/OpenSheet'
 import RangePicker from '../components/reader/RangePicker'
 import Icon from '../components/icons'
+import ZoomControl from '../components/reader/ZoomControl'
+import { clampZoom } from '../utils/zoomSteps'
 import Busy, { useDelayed } from '../components/Busy'
 import { askWhereToSave, catalog, download as downloadVoice, storedEntries } from '../services/piperEngine'
 import { isKeyVoice, isOpenVoice, preferredOpenVoice } from '../utils/voicePreference'
@@ -19,8 +22,10 @@ import VOICE_PROVIDERS, { PROVIDER_FIRST } from '../data/voiceProviders'
 import { languageName, offeredVoiceFor, voiceReads } from '../utils/voiceGroups'
 import { detectLanguage } from '../utils/languageDetector'
 import { cloudEntries, hasKey } from '../services/cloudVoices'
+import { readFollow, saveFollow, unitsForText, bandFor, unitTextAt } from '../utils/follow'
 
 const hasAnyKey = () => VOICE_PROVIDERS.some((p) => hasKey(p.id))
+import { unlessBusy } from '../utils/documentBusy'
 import { composeWordReport, sendWordReport } from '../services/reports'
 import './ReaderView.css'
 
@@ -41,7 +46,7 @@ function sliceBlocks(slice, defs) {
     for (const d of defs) {
         if (d.skip) { blocks.push({ type: 'chrome', skip: true, text: d.text, words: [] }); continue }
         const n = d.count || 0
-        blocks.push({ type: d.type, words: slice.slice(bi, bi + n) })
+        blocks.push({ type: d.type, words: slice.slice(bi, bi + n), cell: !!d.cell })
         bi += n
     }
     return blocks
@@ -52,6 +57,22 @@ export default function ReaderView() {
     const location = useLocation()
     const navigate = useNavigate()
     const sequencer = useSequencer('')
+    const shellContext = useOutletContext()
+    const tuner = shellContext?.tuner
+    const setTunerReady = tuner?.setReady
+    const setTunerOpen = tuner?.setOpen
+    const tunerReady = !!sequencer.text.trim() && !sequencer.docLoading
+    const tuneOpen = !!tuner?.open && tunerReady
+    const closeTuner = useCallback(() => setTunerOpen?.(false), [setTunerOpen])
+    useEffect(() => {
+        setTunerReady?.(tunerReady)
+        if (!tunerReady) setTunerOpen?.(false)
+    }, [tunerReady, setTunerReady, setTunerOpen])
+    useEffect(() => () => { setTunerReady?.(false); setTunerOpen?.(false) }, [setTunerReady, setTunerOpen])
+    const docBusy = sequencer.documentBusy
+    const docBusyRef = useRef(null)
+    docBusyRef.current = docBusy
+    const unlessDocBusy = useCallback((action) => unlessBusy(() => !!docBusyRef.current, action), [])
 
     const audioRef = useRef(null)
     const [hdAudio,    setHdAudio]    = useState(null)
@@ -115,24 +136,33 @@ export default function ReaderView() {
     const [reportToast, setReportToast] = useState('')
     const [reportSending, setReportSending] = useState(false)
     const reportToastTimerRef = useRef(null)
+    const reportBusyRef = useRef(false)
     const requestReport = useCallback(() => setReportTick((n) => n + 1), [])
+    const unitsRef = useRef(null)
     const reportCurrentWord = useCallback(async (note = '', reportType = 'mispronounced', index = sequencer.currentWordIndex) => {
         const report = composeWordReport({
             words: sequencer.words,
             index,
+            unitText: reportType === 'highlight' && unitsRef.current ? unitTextAt(unitsRef.current, index) : '',
             voice: sequencer.selectedVoice,
             rate: sequencer.playbackRate,
             sourceKind: sequencer.docPdf ? 'pdf' : 'text',
             note,
             reportType,
         })
-        if (!report) return
+        if (!report || reportBusyRef.current) return
+        reportBusyRef.current = true
         setReportSending(true)
         let result
-        try { result = await sendWordReport(report) } finally { setReportSending(false) }
+        try { result = await sendWordReport(report) } catch { result = { failed: true } } finally {
+            reportBusyRef.current = false
+            setReportSending(false)
+        }
         setReportToast(result.sent
             ? t('controls.reportSent', 'Reported — thank you')
-            : t('controls.reportQueued', 'Saved — it will be sent when online'))
+            : result.failed
+                ? t('controls.reportFailed', 'Could not send — please try again')
+                : t('controls.reportQueued', 'Saved — it will be sent when online'))
         clearTimeout(reportToastTimerRef.current)
         reportToastTimerRef.current = setTimeout(() => setReportToast(''), 2800)
     }, [sequencer, t])
@@ -149,6 +179,11 @@ export default function ReaderView() {
     const [mixedVoices, setMixedVoices] = useState(() => {
         try { return localStorage.getItem('paperear_mixed_voices') !== '0' } catch { return true }
     })
+    const [follow, setFollow] = useState(readFollow)
+    const changeFollow = (mode) => {
+        setFollow(mode)
+        saveFollow(mode)
+    }
     const changeMixedVoices = (on) => {
         setMixedVoices(on)
         try { localStorage.setItem('paperear_mixed_voices', on ? '1' : '0') } catch { }
@@ -175,7 +210,7 @@ export default function ReaderView() {
     const pickedByHand = () => { try { return sessionStorage.getItem('paperear_voice_pinned') === '1' } catch { return false } }
     useEffect(() => {
         const next = preferredOpenVoice({ selected: sequencer.selectedVoice, pinned: pickedByHand(), docLang, downloaded: downloadedVoices })
-        if (next) sequencer.setSelectedVoice(next)
+        if (next) sequencer.chooseVoice(next)
     }, [downloadedVoices, docLang])
     const [autoVoice, setAutoVoice] = useState(null)
     const [providerHint, setProviderHint] = useState(null)
@@ -202,7 +237,10 @@ export default function ReaderView() {
         }, 800)
         return () => clearTimeout(timer)
     }, [storedReady, docLang, downloadedVoices])
+    const autoVoiceBusyRef = useRef(false)
     const getAutoVoice = async () => {
+        if (autoVoiceBusyRef.current || !autoVoice) return
+        autoVoiceBusyRef.current = true
         const { lang, pick } = autoVoice
         const whereToSave = askWhereToSave(pick.id)
         setAutoVoice({ lang, pick, pct: 0 })
@@ -219,9 +257,18 @@ export default function ReaderView() {
             sequencer.setNotification(t('voices.offerFailed', 'The voice could not be downloaded. You can get it later from the voice list.'))
             setTimeout(() => sequencer.setNotification(''), 5000)
         }
+        autoVoiceBusyRef.current = false
         setAutoVoice(null)
     }
     const [docView, setDocView] = useState(false)
+    const [docZoom, setDocZoom] = useState(1)
+    const [textZoom, setTextZoomState] = useState(() => {
+        try { return clampZoom(localStorage.getItem('paperear_text_zoom') || 1) } catch { return 1 }
+    })
+    const setTextZoom = useCallback((value) => {
+        setTextZoomState(value)
+        try { localStorage.setItem('paperear_text_zoom', String(value)) } catch { return }
+    }, [])
     const [docJumpTick, setDocJumpTick] = useState(0)
     const docViewDefaultRef = useRef(null)
     const jumpToCurrent = () => (docView ? setDocJumpTick((n) => n + 1) : sequencer.scrollToCurrentWord())
@@ -319,6 +366,13 @@ export default function ReaderView() {
         }
         return out
     }, [sequencer.loadedPages, sequencer.words])
+
+    const speechUnits = useMemo(() => unitsForText(sequencer.text, pagedView), [sequencer.text, pagedView])
+    unitsRef.current = speechUnits
+    const band = useMemo(
+        () => (follow === 'word' ? null : bandFor(speechUnits, sequencer.currentWordIndex, follow)),
+        [speechUnits, sequencer.currentWordIndex, follow],
+    )
 
     useEffect(() => {
         if (!sequencer.docPdf) return
@@ -464,7 +518,7 @@ export default function ReaderView() {
     }, [])
 
     const playActive = useCallback(() => {
-        if (sequencer.continuing) return
+        if (sequencer.continuing || docBusyRef.current) return
         if (usingHdTransport) {
             playHd()
             return
@@ -481,6 +535,7 @@ export default function ReaderView() {
     }, [usingHdTransport, pauseHd, sequencer])
 
     const stopActive = useCallback(() => {
+        if (docBusyRef.current) return
         if (usingHdTransport) {
             if (audioRef.current) audioRef.current.currentTime = 0
             playHd()
@@ -490,6 +545,7 @@ export default function ReaderView() {
     }, [usingHdTransport, playHd, sequencer])
 
     const resumeActive = useCallback(() => {
+        if (docBusyRef.current) return
         if (usingHdTransport) {
             playHd()
             return
@@ -509,20 +565,20 @@ export default function ReaderView() {
     activeIsPausedRef.current = usingHdTransport ? hdIsPaused : sequencer.isPaused
 
     activeSkipForwardWordRef.current = usingHdTransport
-        ? () => skipHdWord(1)
-        : () => sequencer.skipForwardWordRef.current?.()
+        ? unlessDocBusy(() => skipHdWord(1))
+        : unlessDocBusy(() => sequencer.skipForwardWordRef.current?.())
 
     activeSkipBackwardWordRef.current = usingHdTransport
-        ? () => skipHdWord(-1)
-        : () => sequencer.skipBackwardWordRef.current?.()
+        ? unlessDocBusy(() => skipHdWord(-1))
+        : unlessDocBusy(() => sequencer.skipBackwardWordRef.current?.())
 
     activeSkipForwardParagraphRef.current = usingHdTransport
-        ? () => skipHdParagraph('forward')
-        : () => sequencer.skipForwardParagraphRef.current?.()
+        ? unlessDocBusy(() => skipHdParagraph('forward'))
+        : unlessDocBusy(() => sequencer.skipForwardParagraphRef.current?.())
 
     activeSkipBackwardParagraphRef.current = usingHdTransport
-        ? () => skipHdParagraph('backward')
-        : () => sequencer.skipBackwardParagraphRef.current?.()
+        ? unlessDocBusy(() => skipHdParagraph('backward'))
+        : unlessDocBusy(() => sequencer.skipBackwardParagraphRef.current?.())
 
     const volumeBy = useCallback((d) => {
         const val = Math.max(0, Math.min(1, Math.round(((volume ?? 1) + d) * 10) / 10))
@@ -687,11 +743,16 @@ export default function ReaderView() {
     const waitingFor = sequencer.continuing ? 'pages' : !usingHdTransport && controlIsPlaying && !controlIsPaused && sequencer.buffering ? 'voice' : null
     const playWaiting = useDelayed(!!waitingFor)
     const waitingLabel = waitingFor === 'pages' ? t('busy.nextPages', 'Loading the next pages…') : t('busy.voice', 'Preparing the voice…')
+    const openingPages = !sequencer.docLoading && sequencer.rangeLoading && !sequencer.text.trim()
     const stageLabel = sequencer.ocrBusy
         ? t('sequencer.ocrProgress', 'Preparing scanned pages… {{done}}/{{total}}').replace('{{done}}', sequencer.ocrBusy.done).replace('{{total}}', sequencer.ocrBusy.total)
         : sequencer.docLoading?.total
             ? t('busy.pagesProgress', 'Preparing page {{done}} of {{total}}…').replace('{{done}}', sequencer.docLoading.done).replace('{{total}}', sequencer.docLoading.total)
-            : t('sequencer.loadingFile', 'Opening {{file}}…').replace('{{file}}', sequencer.docLoading?.name || '')
+            : openingPages
+                ? t('busy.pages', 'Preparing the pages…')
+                : t('sequencer.loadingFile', 'Opening {{file}}…').replace('{{file}}', sequencer.docLoading?.name || '')
+    const busyShown = useDelayed(!!docBusy, 250)
+    const busyLabel = docBusy === 'ocr' ? stageLabel : t('busy.pages', 'Preparing the pages…')
     const [checkIn, setCheckIn] = useState(null)
     const lastTouchRef = useRef(Date.now())
     useEffect(() => {
@@ -722,12 +783,12 @@ export default function ReaderView() {
         if (controlIsPlaying && entryMode === 'write') setEditing(false)
     }, [controlIsPlaying, entryMode])
 
-    const handleSkipForwardWord = usingHdTransport ? () => skipHdWord(1) : sequencer.skipForwardWord
-    const handleSkipBackwardWord = usingHdTransport ? () => skipHdWord(-1) : sequencer.skipBackwardWord
-    const handleSkipForwardParagraph = usingHdTransport ? () => skipHdParagraph('forward') : sequencer.skipForwardParagraph
-    const handleSkipBackwardParagraph = usingHdTransport ? () => skipHdParagraph('backward') : sequencer.skipBackwardParagraph
+    const handleSkipForwardWord = unlessDocBusy(usingHdTransport ? () => skipHdWord(1) : sequencer.skipForwardWord)
+    const handleSkipBackwardWord = unlessDocBusy(usingHdTransport ? () => skipHdWord(-1) : sequencer.skipBackwardWord)
+    const handleSkipForwardParagraph = unlessDocBusy(usingHdTransport ? () => skipHdParagraph('forward') : sequencer.skipForwardParagraph)
+    const handleSkipBackwardParagraph = unlessDocBusy(usingHdTransport ? () => skipHdParagraph('backward') : sequencer.skipBackwardParagraph)
 
-    const handleWordClick = usingHdTransport ? seekHdToWordIndex : sequencer.jumpToWord
+    const handleWordClick = unlessDocBusy(usingHdTransport ? seekHdToWordIndex : sequencer.jumpToWord)
 
     const handleProgressInput = usingHdTransport
         ? (e) => {
@@ -770,10 +831,10 @@ export default function ReaderView() {
     const rangeSize = rangeFrom != null ? rangeTo - rangeFrom + 1 : 0
     const wordIndexNow = sequencer.currentWordIndex
     const currentPage = pagedView?.find((p) => p.words.length && wordIndexNow >= p.words[0].index && wordIndexNow <= p.words[p.words.length - 1].index)?.pageNum ?? rangeFrom ?? 1
-    const whenRangeIdle = (action) => () => { if (!sequencer.rangeLoading) action() }
+    const whenRangeIdle = (action) => () => { if (!docBusyRef.current) action() }
 
     const goToPage = (n) => {
-        if (n < 1 || n > totalPages) return
+        if (docBusyRef.current || n < 1 || n > totalPages) return
         const page = pagedView?.find((p) => p.pageNum === n)
         if (page?.words.length) {
             handleWordClick(page.words[0].index)
@@ -839,7 +900,7 @@ export default function ReaderView() {
                     onLoad={(from, to) => sequencer.loadPageRange(from, to)}
                     onLoadAll={() => sequencer.loadPageRange(1, sequencer.docMeta?.totalPages || 1)}
                     onCancel={() => (sequencer.text.trim() ? sequencer.cancelRangePicker() : closeCurrentDoc())}
-                    busy={sequencer.ocrBusy}
+                    busy={sequencer.ocrBusy || (docBusy ? { loading: true } : null)}
                 />
             )}
 
@@ -876,7 +937,7 @@ export default function ReaderView() {
                         )}
                     </div>
                 )}
-                {autoVoice && !sequencer.notification && !checkIn && (
+                {autoVoice && (autoVoice.pct !== null || (!sequencer.notification && !checkIn)) && (
                     <div className="reader-notification reader-offer" role="status">
                         {autoVoice.pct === null ? (
                             <>
@@ -918,18 +979,20 @@ export default function ReaderView() {
                     voices={[...downloadedVoices, ...sequencer.voices]}
                     selectedVoice={sequencer.selectedVoice}
                     onVoicesChanged={refreshDownloadedVoices}
-                    onSpeedPreset={(wpm) => speedBy(wpm - sequencer.currentWPM)}
                     onSpeedCommit={(wpm) => speedBy(wpm - sequencer.currentWPM)}
                     pauses={pauses}
                     onPausesChange={changePauses}
                     mixedVoices={mixedVoices}
                     onMixedVoicesChange={changeMixedVoices}
+                    follow={follow}
+                    onFollowChange={changeFollow}
                     onVoiceChange={(v) => {
                         try { sessionStorage.setItem('paperear_voice_pinned', '1') } catch { }
-                        sequencer.setSelectedVoice(v)
+                        sequencer.chooseVoice(v)
                         if (!usingHdTransport) sequencer.debouncedSettingsChange()
                     }}
                     currentWPM={sequencer.currentWPM}
+                    speedLimit={sequencer.speedLimit}
                     volume={volume}
                     onVolumeChange={(e) => {
                         const val = parseFloat(e.target.value)
@@ -938,38 +1001,15 @@ export default function ReaderView() {
                         if (!usingHdTransport) sequencer.requestSeamlessSettingsApply()
                     }}
                     onMuteToggle={handleMuteToggle}
-                    onSpeedInput={(e) => {
-                        const newWPM = parseInt(e.target.value, 10)
-                        const newRate = sequencer.wpmToRate(newWPM)
-                        sequencer.setCurrentWPM(newWPM)
-                        sequencer.setPlaybackRate(newRate)
-                        sequencer.currentPlaybackRateRef.current = newRate
-                        if (usingHdTransport) {
-                            recalculateHdBaseWpm()
-                            applyHdPlaybackRate(toHdPlaybackRate(newWPM))
-                        } else {
-                            sequencer.requestSeamlessSettingsApply()
-                        }
-                    }}
-                    onSpeedChange={(e) => {
-                        const newWPM = parseInt(e.target.value, 10)
-                        const newRate = sequencer.wpmToRate(newWPM)
-                        sequencer.setCurrentWPM(newWPM)
-                        sequencer.setPlaybackRate(newRate)
-                        sequencer.currentPlaybackRateRef.current = newRate
-                        if (usingHdTransport) {
-                            recalculateHdBaseWpm()
-                            applyHdPlaybackRate(toHdPlaybackRate(newWPM))
-                        } else {
-                            sequencer.requestSeamlessSettingsApply()
-                        }
-                    }}
                     onPlay={playActive}
                     onPause={pauseActive}
                     onStop={stopActive}
                     onResume={resumeActive}
+                    tuneOpen={tuneOpen}
+                    onTuneClose={closeTuner}
                     waiting={playWaiting}
                     waitingLabel={waitingLabel}
+                    locked={!!docBusy}
                     onSkipForwardWord={handleSkipForwardWord}
                     onSkipBackwardWord={handleSkipBackwardWord}
                     onSkipForwardParagraph={handleSkipForwardParagraph}
@@ -985,7 +1025,7 @@ export default function ReaderView() {
                         onMouseDown={handleProgressMouseDown}
                         onMouseUp={handleProgressMouseUp}
                         onTouchEnd={handleProgressTouchEnd}
-                        disabled={!sequencer.text.trim()}
+                        disabled={!sequencer.text.trim() || !!docBusy}
                     />
                     {sequencer.text.trim() && (
                         <div className="dock-views">
@@ -1027,10 +1067,10 @@ export default function ReaderView() {
                             onRead={() => { setEditing(false); playActive() }}
                             notification={sequencer.notification}
                         />
-                    ) : sequencer.docLoading ? (
+                    ) : sequencer.docLoading || openingPages ? (
                         <>
                             <Busy label={stageLabel} showLabel announce={false} className="busy--stage" />
-                            <Busy label={t('sequencer.loadingFile', 'Opening {{file}}…').replace('{{file}}', sequencer.docLoading.name || '')} className="busy--quiet" />
+                            <Busy label={sequencer.docLoading ? t('sequencer.loadingFile', 'Opening {{file}}…').replace('{{file}}', sequencer.docLoading.name || '') : stageLabel} className="busy--quiet" />
                         </>
                     ) : entryMode === 'read' && !sequencer.text.trim() && !sequencer.docPdf && !sequencer.pendingRange && !sequencer.notification ? (
                         <OpenSheet
@@ -1039,12 +1079,16 @@ export default function ReaderView() {
                         />
                     ) : docView && sequencer.docPdf ? (
                         <DocumentScroll
+                            zoom={docZoom}
+                            dockOpen={tuneOpen}
                             pdf={sequencer.docPdf}
                             pagedView={pagedView || []}
                             loadedPages={sequencer.loadedPages}
                             currentWordIndex={sequencer.currentWordIndex}
+                            band={band}
                             onWordClick={handleWordClick}
                             jumpTick={docJumpTick}
+                            restoreTick={sequencer.restoreTick}
                             ocrItemsByPage={sequencer.ocrItemsByPage}
                             bookmarkedPage={sequencer.bookmark}
                             onToggleBookmark={sequencer.toggleBookmark}
@@ -1063,8 +1107,12 @@ export default function ReaderView() {
                         />
                     ) : (
                     <TextDisplay
+                        zoom={textZoom}
+                        dockOpen={tuneOpen}
+                        restoreTick={sequencer.restoreTick}
                         words={sequencer.words}
                         currentWordIndex={sequencer.currentWordIndex}
+                        band={band}
                         onWordClick={handleWordClick}
                         richHtml={richHtml}
                         pages={richHtml && !sequencer.docPdf && !sequencer.loadedPages.length ? null : pagedView}
@@ -1081,6 +1129,19 @@ export default function ReaderView() {
                     />
                     )}
 
+
+                    {docBusy && !sequencer.continuing && !sequencer.docLoading && !openingPages && sequencer.text.trim() && (
+                        <div className={'reader-busy' + (busyShown ? ' is-shown' : '')} role="status" aria-live="polite">
+                            <Busy label={busyLabel} showLabel announce={false} delay={250} className="busy--stage" />
+                        </div>
+                    )}
+
+                    {sequencer.text.trim() && !(entryMode === 'write' && editing) && (
+                        <ZoomControl
+                            zoom={docView && sequencer.docPdf ? docZoom : textZoom}
+                            onChange={docView && sequencer.docPdf ? setDocZoom : setTextZoom}
+                        />
+                    )}
 
                     {sequencer.text.trim() && !(entryMode === 'write' && editing) && (
                         <button
@@ -1102,8 +1163,9 @@ export default function ReaderView() {
                                     {t('reader.pages', 'Pages')} {rangeFrom}–{rangeTo}
                                     <span className="reader-rangebar-total"> / {totalPages}</span>
                                 </span>
+                                <Busy active={sequencer.rangeLoading} label={t('busy.pages', 'Preparing the pages…')} showLabel className="busy--quiet" />
                                 <div className="reader-rangebar-btns">
-                                    <button disabled={rangeFrom <= 1} aria-disabled={sequencer.rangeLoading || undefined} onClick={whenRangeIdle(() => sequencer.shiftRange(-10))} title={t('reader.back10', 'Back 10 pages')}>−10</button>
+                                    <button disabled={rangeFrom <= 1} aria-disabled={docBusy ? true : undefined} onClick={whenRangeIdle(() => sequencer.shiftRange(-10))} title={t('reader.back10', 'Back 10 pages')}>−10</button>
                                     <button disabled={rangeFrom <= 1} aria-disabled={sequencer.rangeLoading || undefined} onClick={whenRangeIdle(() => sequencer.shiftRange(-5))} title={t('reader.back5', 'Back 5 pages')}>−5</button>
                                     <button disabled={rangeFrom <= 1} aria-disabled={sequencer.rangeLoading || undefined} onClick={whenRangeIdle(() => sequencer.shiftRange(-1))} title={t('reader.back1', 'Back 1 page')}>‹</button>
                                     <button disabled={rangeTo >= totalPages} aria-disabled={sequencer.rangeLoading || undefined} onClick={whenRangeIdle(() => sequencer.shiftRange(1))} title={t('reader.fwd1', 'Forward 1 page')}>›</button>

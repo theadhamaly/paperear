@@ -2,19 +2,9 @@ import React, { useRef, useEffect, useMemo, useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import './TextDisplay.css'
 import { walkWordFragments } from '../../utils/richWords'
-import { TEXT_ZOOM_LEVELS, stepZoom } from '../../utils/zoomSteps'
 import WordBar from './WordBar'
-import ZoomControl from './ZoomControl'
-
-const TEXT_ZOOM_KEY = 'paperear_text_zoom'
-const readTextZoom = () => {
-    try {
-        const v = Number(localStorage.getItem(TEXT_ZOOM_KEY))
-        return TEXT_ZOOM_LEVELS.includes(v) ? v : 1
-    } catch {
-        return 1
-    }
-}
+import useViewAnchor from '../../hooks/useViewAnchor'
+import { dockCoverFor } from '../../utils/dockLayout'
 
 /**
  * TextDisplay — PDF-style viewer.
@@ -68,8 +58,12 @@ function injectWordSpansIntoHtml(htmlString) {
 }
 
 export default function TextDisplay({
+    zoom: textZoom = 1,
+    dockOpen = false,
+    restoreTick = 0,
     words,
     currentWordIndex,
+    band = null,
     onWordClick,
     richHtml,
     pages,
@@ -130,21 +124,12 @@ export default function TextDisplay({
             onClose={closeBar}
         />
     ) : null
-    const [textZoom, setTextZoom] = useState(readTextZoom)
-    const stepText = (dir) => setTextZoom((z) => {
-        const next = stepZoom(TEXT_ZOOM_LEVELS, z, dir)
-        try { localStorage.setItem(TEXT_ZOOM_KEY, String(next)) } catch { return next }
-        return next
+    const dockCover = () => dockCoverFor(dockOpen)
+    useViewAnchor(`${textZoom}|${dockOpen}`, {
+        coverBottom: dockCover,
+        getScroller: () => containerRef.current?.closest('.pdf-page-area') || null,
+        locate: () => containerRef.current?.querySelector('.td-word--current') || null,
     })
-    const zoomControl = (
-        <ZoomControl
-            onIn={() => stepText(1)}
-            onOut={() => stepText(-1)}
-            canIn={textZoom !== TEXT_ZOOM_LEVELS[TEXT_ZOOM_LEVELS.length - 1]}
-            canOut={textZoom !== TEXT_ZOOM_LEVELS[0]}
-            label={`${Math.round(textZoom * 100)}%`}
-        />
-    )
     const prevIndexRef   = useRef(-1)
     const isAutoScrollingRef = useRef(true)
     const focusTrackRef  = useRef(null)
@@ -237,6 +222,48 @@ export default function TextDisplay({
         prevIndexRef.current = current
     }, [currentWordIndex, richHtml, focusMode])
 
+    const latestWordRef = useRef(currentWordIndex)
+    latestWordRef.current = currentWordIndex
+
+    useEffect(() => {
+        if (!restoreTick) return undefined
+        let frame = 0
+        let tries = 0
+        const settle = () => {
+            const span = containerRef.current?.querySelector(`[data-word-index="${latestWordRef.current}"]`)
+            if (span) {
+                span.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'nearest' })
+                return
+            }
+            tries += 1
+            if (tries < 90) frame = requestAnimationFrame(settle)
+        }
+        frame = requestAnimationFrame(settle)
+        return () => cancelAnimationFrame(frame)
+    }, [restoreTick])
+
+    const bandStart = band ? band.range[0] : -1
+    const bandEnd = band ? band.range[1] : -1
+    const paintedBandRef = useRef(null)
+    useEffect(() => {
+        const root = containerRef.current
+        if (!root) return
+        const paint = (from, to, on) => {
+            for (let i = from; i <= to; i++) {
+                for (const span of root.querySelectorAll(`[data-word-index="${i}"]`)) span.classList.toggle('td-word--band', on)
+            }
+        }
+        const painted = paintedBandRef.current
+        if (painted && (painted.from !== bandStart || painted.to !== bandEnd)) {
+            paint(painted.from, painted.to, false)
+            paintedBandRef.current = null
+        }
+        if (bandStart >= 0) {
+            paint(bandStart, bandEnd, true)
+            paintedBandRef.current = { from: bandStart, to: bandEnd }
+        }
+    }, [bandStart, bandEnd, currentWordIndex, richHtml, focusMode, pages, words])
+
     // Focus mode — translate the text so the current word's line stays centered.
     useEffect(() => {
         if (!focusMode || !containerRef.current || !focusTrackRef.current) return
@@ -318,7 +345,6 @@ export default function TextDisplay({
                     <span className="pdf-viewer-hint">{t('reader.jumpHint', 'Click any word to jump')}</span>
                     {pageReportLink}
                 </div>
-                {zoomControl}
                 <div className="pdf-page-area" ref={containerRef} onClick={handleRichClick}>
                     {pages.map((pg) => (
                         <div className="pdf-page" key={pg.pageNum} style={{ marginBottom: '1.5rem' }}>
@@ -391,7 +417,6 @@ export default function TextDisplay({
                 </span>
                 {pageReportLink}
             </div>
-            {zoomControl}
 
             {/* Page area */}
             <div className="pdf-page-area">

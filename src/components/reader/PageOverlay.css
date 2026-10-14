@@ -13,6 +13,23 @@
     display: block;
 }
 
+.page-overlay__band {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.page-overlay__band-strip {
+    position: absolute;
+    border-radius: 4px;
+    background: var(--band-bg);
+    mix-blend-mode: multiply;
+}
+
+.page-overlay--dark .page-overlay__band-strip {
+    mix-blend-mode: screen;
+}
+
 .page-overlay__boxes {
     position: absolute;
     inset: 0;

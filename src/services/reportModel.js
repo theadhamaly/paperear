@@ -23,10 +23,11 @@ export const clampReport = ({ client_id, ...report }) => ({
     lang: scrub(report.lang || 'other').slice(0, 16) || 'other',
 })
 
-export function buildWordReport({ words, index, voice, rate, sourceKind, appBuild, note = '', reportType = 'mispronounced' }) {
+export function buildWordReport({ words, index, voice, rate, sourceKind, appBuild, note = '', reportType = 'mispronounced', unitText = '' }) {
     const word = (words?.[index] || '').trim()
     if (!word) return null
-    const context = words.slice(Math.max(0, index - CONTEXT_RADIUS), index + CONTEXT_RADIUS + 1).join(' ')
+    const nearby = words.slice(Math.max(0, index - CONTEXT_RADIUS), index + CONTEXT_RADIUS + 1).join(' ')
+    const context = reportType === 'highlight' && unitText.trim() ? unitText.trim() : nearby
     return clampReport({
         report_type: reportType,
         word,

@@ -61,6 +61,15 @@
     color: var(--accent-primary);
 }
 
+.wordbar-btn--band {
+    font-size: 1.25rem;
+    line-height: 1;
+}
+
+.wordbar-btn--band:hover {
+    color: var(--accent-primary);
+}
+
 .wordbar-note {
     display: flex;
     align-items: center;

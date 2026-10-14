@@ -9,6 +9,7 @@
 
 
 import { refineBoxesWithGlyphs } from './glyphBoxes.js'
+import { splitByTables, cellReadingOrder, tableAnchor } from './tableCells.js'
 
 const TOC_LINE = /^(.{2,}?)[\s.·…]{2,}(\d{1,4})$/
 const COLOPHON_PATTERNS = [
@@ -31,7 +32,7 @@ const COLOPHON_PATTERNS = [
 
 const CREDIT_ROLE = /\b(?:senior|project|managing|art|jacket|us|uk|pre-production|development)?\s?(?:editors?|designers?|design\b|producers?|publishers?|directors?|managers?)/gi
 
-function normalizeItems(items) {
+export function normalizeItems(items) {
     const out = []
     for (const it of items) {
         if (typeof it.str !== 'string' || !it.str.trim()) continue
@@ -182,6 +183,7 @@ export function clusterLines(items, rtl = false) {
     for (const l of lines) {
         l.items = orderLineItems(l.items, rtl)
         l.x = l.items[0].x
+        l.xMin = Math.min(...l.items.map((i) => i.x))
         l.xEnd = Math.max(...l.items.map((i) => i.x + i.w))
         l.h = Math.max(...l.items.map((i) => i.h))
         l.text = l.items.map((i) => i.str.trim()).filter(Boolean).join(' ')
@@ -222,18 +224,101 @@ export function clusterBlocks(lines) {
 }
 
 
+const LIST_MARKER = /^(?:[•◦▪▫‣●○■□·–—*-]\s|\(?\d{1,2}[.)]\s|\(?[a-z]\)\s)/
+const SENTENCE_END = /[.!?:;؟۔]["'”’»)\]]?\s*$/
+const BIG_SHORTFALL = 0.25
+const SIGNAL_SHORTFALL = 0.06
+const SENTENCE_SHORTFALL = 0.15
+const BLOCK_END_SHORTFALL = 0.12
+
+const isArabicLine = (text) => (text.match(/[؀-ۿ]/g) || []).length > (text.match(/[A-Za-z]/g) || []).length
+
+function percentile(sorted, p) {
+    return sorted[Math.min(sorted.length - 1, Math.max(0, Math.round((sorted.length - 1) * p)))]
+}
+
+function lineShortfall(line, allLines) {
+    const rtl = line.rtl
+    const width = line.xEnd - line.xMin
+    const peers = allLines.filter((m) => {
+        if (m.rtl !== rtl) return false
+        const overlap = Math.min(line.xEnd, m.xEnd) - Math.max(line.xMin, m.xMin)
+        return overlap > 0.5 * Math.min(width, m.xEnd - m.xMin)
+    })
+    if (peers.length < 4) return null
+    const rights = peers.map((m) => m.xEnd).sort((a, b) => a - b)
+    const lefts = peers.map((m) => m.xMin).sort((a, b) => a - b)
+    const colLeft = percentile(lefts, 0.1)
+    const colRight = percentile(rights, 0.9)
+    const colWidth = colRight - colLeft
+    if (colWidth <= 0) return null
+    return rtl ? (line.xMin - colLeft) / colWidth : (colRight - line.xEnd) / colWidth
+}
+
+const OPENING_BRACKET = /^[([{«“‹﴾]/
+const MIN_TITLE_WIDTH_RATIO = 0.2
+const TITLE_LEADING = 1.1
+const isUpperCase = (text) => text === text.toUpperCase() && /\p{Lu}/u.test(text)
+const wordCount = (text) => text.trim().split(/\s+/).filter(Boolean).length
+
+function isCentredTitlePair(line, next) {
+    if (/[:：]\s*$/.test(line.text) || SENTENCE_END.test(line.text)) return false
+    const prevWidth = line.xEnd - line.xMin
+    const nextWidth = next.xEnd - next.xMin
+    if (nextWidth >= prevWidth || nextWidth < prevWidth * MIN_TITLE_WIDTH_RATIO) return false
+    if (line.y - next.y < TITLE_LEADING * Math.max(line.h, next.h)) return false
+    if (wordCount(line.text) <= 2) return false
+    if (wordCount(next.text) <= 2 && !(isUpperCase(line.text) && isUpperCase(next.text))) return false
+    if (OPENING_BRACKET.test(next.text.trim())) return false
+    if (isArabicLine(line.text) !== isArabicLine(next.text)) return false
+    return Math.abs((next.xMin + next.xEnd) / 2 - (line.xMin + line.xEnd) / 2) <= 0.5 * Math.max(line.h, next.h)
+}
+
+function breakAfterLine(line, next, shortfall, pitch, neighbourPitches) {
+    if (shortfall === null) return false
+    const nextLower = /^\p{Ll}/u.test(next.text)
+    if (shortfall >= BIG_SHORTFALL) return !nextLower || shortfall >= 0.4
+    if (shortfall < SIGNAL_SHORTFALL) return false
+    if (LIST_MARKER.test(next.text)) return true
+    const sizeRatio = Math.max(line.h, next.h) / Math.max(1e-6, Math.min(line.h, next.h))
+    if (sizeRatio >= 1.15) return true
+    const startShift = line.rtl ? Math.abs(next.xEnd - line.xEnd) : Math.abs(next.xMin - line.xMin)
+    const lineIsIndented = (line.rtl ? next.xEnd - line.xEnd : line.xMin - next.xMin) > 0
+    const centredContinuation = isCentredTitlePair(line, next)
+    if (!lineIsIndented && !centredContinuation && startShift >= 1.2 * Math.max(line.h, next.h)) return true
+    if (neighbourPitches.length && neighbourPitches.every((p) => pitch > p * 1.25)) return true
+    if (shortfall >= SENTENCE_SHORTFALL && SENTENCE_END.test(line.text) && !nextLower) return true
+    return false
+}
+
 export function applyHardBreaks(blocks, columnWidth, tocPage = false) {
+    const allLines = []
+    for (const b of blocks) for (const l of b.lines || []) {
+        l.rtl = isArabicLine(l.text || '')
+        if (l.xMin === undefined) l.xMin = l.x
+        allLines.push(l)
+    }
     for (const b of blocks) {
-        if (!b.lines || b.lines.length < 2) continue
+        if (!b.lines || !b.lines.length) continue
+        const last = b.lines[b.lines.length - 1]
+        const lastShort = lineShortfall(last, allLines)
+        b.hardEnd = lastShort !== null && lastShort >= BLOCK_END_SHORTFALL
+        if (b.lines.length < 2) continue
         const blockWidth = b.xEnd - b.x
         const isDisplayBlock = tocPage || (columnWidth > 0 && blockWidth < columnWidth * 0.7)
+        const pitches = []
+        for (let i = 1; i < b.lines.length; i++) pitches.push(b.lines[i - 1].y - b.lines[i].y)
+        b.breakAfter = []
         let out = ''
         for (let i = 0; i < b.lines.length; i++) {
             const line = b.lines[i]
             if (i > 0) {
                 const prev = b.lines[i - 1]
                 const endsInNumber = /[\d٠-٩][)"'»\]]?\s*$/.test(prev.text || '')
-                out += (isDisplayBlock || endsInNumber) ? '\n' : ' '
+                const hard = isDisplayBlock || endsInNumber
+                    || breakAfterLine(prev, line, lineShortfall(prev, allLines), pitches[i - 1], [pitches[i - 2], pitches[i]].filter((p) => p !== undefined))
+                b.breakAfter.push(hard)
+                out += hard ? '\n' : ' '
             }
             out += line.text
         }
@@ -454,9 +539,45 @@ export function wordBoxes(block, blockIndex) {
 }
 
 
-export function buildBlockModel(rawItems, { pageWidth, pageHeight, rtl = false, glyphs = null }) {
-    const items = normalizeItems(rawItems)
+export function cellBlock(items, rtl, after = '') {
+    const lines = clusterLines(items, rtl)
+    const own = lines.map((l) => l.text).join(' ')
+    return {
+        lines,
+        type: 'cell',
+        after,
+        x: Math.min(...lines.map((l) => l.x)),
+        xEnd: Math.max(...lines.map((l) => l.xEnd)),
+        yTop: Math.max(...lines.map((l) => l.y + l.h)),
+        yBottom: Math.min(...lines.map((l) => l.y)),
+        h: median(lines.map((l) => l.h)),
+        text: after ? `${own} ${after}` : own,
+    }
+}
 
+function insertTableBlocks(blocks, order, groups) {
+    const proseCount = blocks.length
+    const placements = []
+    groups.forEach((group, tableIndex) => {
+        const slots = cellReadingOrder(group.cells.filter((s) => !s.cell.consumed && s.items.length), group.table.rtl)
+        if (!slots.length) return
+        const ids = slots.map((slot) => {
+            const block = cellBlock(slot.items, group.table.rtl, slot.cell.after)
+            block.rowKey = `${tableIndex}:${slot.cell.row}`
+            blocks.push(block)
+            return blocks.length - 1
+        })
+        const left = Math.min(...group.table.cells.map((c) => c.x0))
+        const right = Math.max(...group.table.cells.map((c) => c.x1))
+        const anchor = tableAnchor(group)
+        const found = order.findIndex((i) => i < proseCount && blocks[i].yTop < anchor - 1 && blocks[i].xEnd > left && blocks[i].x < right)
+        placements.push({ at: found < 0 ? order.length : found, anchor, ids })
+    })
+    placements.sort((a, b) => b.at - a.at || a.anchor - b.anchor)
+    for (const p of placements) order.splice(p.at, 0, ...p.ids)
+}
+
+function layoutBlocks(items, { pageWidth, pageHeight, rtl, knownToc = false }) {
     const assemble = (bands) => {
         const blocks = []
         const order = []
@@ -483,7 +604,22 @@ export function buildBlockModel(rawItems, { pageWidth, pageHeight, rtl = false, 
         }
     }
 
+    if (knownToc) tocPage = true
     applyHardBreaks(blocks, Math.max(0, ...blocks.map((b) => b.xEnd - b.x)), tocPage)
+    return { blocks, order, tocPage }
+}
+
+export function buildBlockModel(rawItems, { pageWidth, pageHeight, rtl = false, glyphs = null, tables = null }) {
+    const items = normalizeItems(rawItems)
+    const geometry = { pageWidth, pageHeight, rtl }
+    let { blocks, order, tocPage } = layoutBlocks(items, geometry)
+    if (tables?.length) {
+        const { rest, groups } = splitByTables(items, tables)
+        if (groups.some((g) => g.cells.some((s) => s.items.length))) {
+            ;({ blocks, order } = layoutBlocks(rest, { ...geometry, knownToc: tocPage }))
+            insertTableBlocks(blocks, order, groups)
+        }
+    }
 
     const words = []
     const readingParts = []
@@ -492,6 +628,11 @@ export function buildBlockModel(rawItems, { pageWidth, pageHeight, rtl = false, 
         const b = blocks[idx]
         const boxes = wordBoxes(b, idx)
         for (const box of boxes) box.skip = !!b.suggestedSkip
+        if (b.after) {
+            for (const token of b.after.split(/\s+/).filter(Boolean)) {
+                boxes.push({ text: token, x: b.x, y: b.yBottom, w: 0, h: 0, block: idx, line: b.lines.length - 1, foreign: true })
+            }
+        }
 
 
 
@@ -520,11 +661,11 @@ export function buildBlockModel(rawItems, { pageWidth, pageHeight, rtl = false, 
                 ) last.skip = true
             }
         }
-        const lineBroken = (b.text || '').includes('\n')
+        const breakAfter = b.breakAfter || []
         const joinBoxes = (list) => {
             let out = ''
             for (let k = 0; k < list.length; k++) {
-                if (k > 0) out += lineBroken && list[k].line !== list[k - 1].line ? '\n' : ' '
+                if (k > 0) out += list[k].line !== list[k - 1].line && breakAfter[list[k - 1].line] ? '\n' : ' '
                 out += list[k].text
             }
             return out
@@ -562,6 +703,8 @@ export function buildBlockModel(rawItems, { pageWidth, pageHeight, rtl = false, 
             beatText: b.beatText,
             bbox: { x: b.x, y: b.yBottom, w: b.xEnd - b.x, h: b.yTop - b.yBottom },
             lineCount: b.lines.length,
+            hardEnd: !!b.hardEnd,
+            row: b.rowKey,
         })),
         order,
         readingText: readingParts.join('\n\n'),

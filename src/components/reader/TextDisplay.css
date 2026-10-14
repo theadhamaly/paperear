@@ -239,6 +239,18 @@
     color: var(--accent-primary);
 }
 
+.td-word--band {
+    background: var(--band-bg);
+}
+
+.pdf-page-content--rich .td-word--band {
+    box-shadow: -0.15em 0 0 var(--band-bg), 0.15em 0 0 var(--band-bg);
+}
+
+.pdf-page-content--rich .td-word--band.td-word--current {
+    box-shadow: 0 1px 6px var(--accent-glow);
+}
+
 .td-word--current {
     background: var(--pdf-highlight-current-bg);
     color: var(--pdf-highlight-current-text);

@@ -1,9 +1,14 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { parseToQueue, splitQueueByScript, sliceTextFromWord, mergeShortChunks, splitLongChunks } from '../utils/textToSSML'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { buildSpeechUnits } from '../utils/speechUnits'
+import { parseToQueue, splitQueueByScript, sliceTextFromWord, mergeShortChunks, mergeLoneShortChunks, splitLongChunks } from '../utils/textToSSML'
 import { applyPronunciationOverrides, buildReadingModel, loadOverrides, protectedSpellings } from '../engine/index.js'
 import { detectLanguage } from '../utils/languageDetector'
-import { buildPagesFromPdf, buildPagesFromText, buildPagesFromMarkdown, pageFromItems, recommendedBudget, rangeText, fitRange, joinPages, detectChrome, applyChromeSkip, applySkippable, detectPageNumbers, detectPromoLines, remapChromeToggleIndex, shiftWindow, firstContentPage, blockCounts } from '../utils/pageModel'
+import { canResumeHeldAudio } from '../utils/resumePlan'
+import { documentBusyReason } from '../utils/documentBusy'
+import { buildPagesFromPdf, buildPagesFromText, buildPagesFromMarkdown, pageFromItems, recommendedBudget, rangeText, fitRange, joinPages, detectChrome, applyChromeSkip, applySkippable, detectPageNumbers, detectPromoLines, remapChromeToggleIndex, shiftWindow, firstContentPage, blockCounts, markPageSkippable } from '../utils/pageModel'
+import { isUnreadableCover } from '../utils/ocrClean'
 import { recognizePages, prefetchPages, isScannedPage } from '../services/ocr'
+import { withTablePages, carryAnnotations } from '../utils/tablePages'
 import { isAllowedVoice, isDropped, isPiperVoice, piperId, piperLang, synthesize as piperSynthesize } from '../services/piperEngine'
 import { isCloudVoice, synthesize as cloudSynthesize } from '../services/cloudVoices'
 import { isDocx, isEpub, textFromDocx, textFromEpub } from '../utils/otherFormats'
@@ -18,9 +23,15 @@ import { usableSystemVoices } from '../utils/voicePreference'
 const OCR_MAX_WINDOW = 20
 const OCR_FIRST_WINDOW = 10
 const OCR_AHEAD = 5
+const SKIP_PASS_WORD_MS = 90
+const SKIP_PASS_MAX_MS = 4000
 import * as docStore from '../services/docStore'
 import { track } from '../utils/track'
+import { BASE_WPM, naturalWpm, paceKind, readPaces, recordPace, speechSpan, speedFor, startingWpm, writePaces } from '../utils/voicePace'
+import { audibleSeconds } from '../utils/wavTrim'
+import { systemSpeech, createUtterance } from '../utils/systemSpeech'
 import { useTranslation } from 'react-i18next'
+import { anchorAt, resolveSavedWord, savedPlaceFor, prunedRanges } from '../utils/savedPlace'
 
 
 
@@ -33,10 +44,10 @@ const readPauses = () => { try { return JSON.parse(localStorage.getItem('paperea
 const readMixedVoices = () => { try { return localStorage.getItem('paperear_mixed_voices') !== '0' } catch { return true } }
 const readRanges = () => { try { return JSON.parse(localStorage.getItem('paperear_doc_ranges') || '{}') } catch { return {} } }
 const getDocRange = (key) => readRanges()[key] || null
-const saveDocRange = (key, from, to) => { try { const a = readRanges(); a[key] = { from, to }; localStorage.setItem('paperear_doc_ranges', JSON.stringify(a)) } catch { } }
+const saveDocRange = (key, from, to) => { try { const a = prunedRanges(readRanges(), key); a[key] = { from, to }; localStorage.setItem('paperear_doc_ranges', JSON.stringify(a)) } catch { } }
 const readWords = () => { try { return JSON.parse(localStorage.getItem('paperear_doc_words') || '{}') } catch { return {} } }
 const getDocWord = (id) => readWords()[id] || null
-const saveDocWord = (id, from, to, word) => { try { const a = readWords(); a[id] = { from, to, word }; localStorage.setItem('paperear_doc_words', JSON.stringify(a)) } catch { } }
+const saveDocWord = (id, from, to, word, anchor) => { try { const a = readWords(); a[id] = { from, to, word, anchor }; localStorage.setItem('paperear_doc_words', JSON.stringify(a)) } catch { } }
 
 export function useSequencer(initialText = '') {
     const [text, setText] = useState(() => {
@@ -118,6 +129,9 @@ export function useSequencer(initialText = '') {
     })
     const docPdfRef = useRef(null)
     const docIdRef = useRef('')
+    const loadGenRef = useRef(0)
+    const rangeRunRef = useRef(0)
+    const ocrRunRef = useRef(0)
 
     useEffect(() => {
         try { localStorage.setItem('paperear_loaded_pages', JSON.stringify(loadedPages)) } catch { }
@@ -132,7 +146,23 @@ export function useSequencer(initialText = '') {
     const manualSeekIntentTimer = useRef(null)
     const manualSeekUntilRef = useRef(0)
     const boundaryFallbackRef = useRef(null)
-    const voiceWordsPerSecRef = useRef({})
+    const paceStorage = () => { try { return localStorage } catch { return null } }
+    const pacesRef = useRef(null)
+    if (pacesRef.current === null) pacesRef.current = readPaces(paceStorage())
+    const [paces, setPaces] = useState(() => pacesRef.current)
+    const isAndroid = typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent)
+    const paceKindOf = (voiceId) => paceKind(voiceId, { android: isAndroid })
+    const learnPace = (voiceId, sample) => {
+        const next = recordPace(pacesRef.current, voiceId, sample)
+        if (next === pacesRef.current) return
+        pacesRef.current = next
+        writePaces(paceStorage(), next)
+        setPaces(next)
+    }
+    const voiceSpeed = (voiceId) => {
+        const kind = paceKindOf(voiceId)
+        return speedFor(currentPlaybackRateRef.current * BASE_WPM, naturalWpm(pacesRef.current, voiceId, kind), kind)
+    }
     const seekHoldDelayTimerRef = useRef(null)
     const seekHoldIntervalRef = useRef(null)
     const keyboardSeekActiveRef = useRef(false)
@@ -168,6 +198,9 @@ export function useSequencer(initialText = '') {
     const shiftTimerRef = useRef(null)
     const entitledRef = useRef(false)
     const resumeRef = useRef(false)
+    const openingPlaceRef = useRef(null)
+    const pendingPlaceRef = useRef(null)
+    const [restoreTick, setRestoreTick] = useState(0)
     const restoredRef = useRef(false)
     const openGenRef = useRef(0)
     const isPausedRef = useRef(false)
@@ -175,10 +208,18 @@ export function useSequencer(initialText = '') {
     const piperAudioRef = useRef(null)
     const piperTokenRef = useRef(0)
     const piperHoldRef = useRef(-1)
+    const piperHoldWordRef = useRef(-1)
 
 
 
 
+
+    const speedLimit = useMemo(() => {
+        const voiceId = selectedVoice || 'default'
+        const kind = paceKind(voiceId, { android: isAndroid })
+        const speed = speedFor(currentWPM, naturalWpm(paces, voiceId, kind), kind)
+        return speed.limited ? { kind: speed.limited, wpm: speed.limitWpm } : null
+    }, [currentWPM, selectedVoice, paces, isAndroid])
 
     const wpmToRate = (wpm) => {
         const baseWPM = 150
@@ -201,9 +242,14 @@ export function useSequencer(initialText = '') {
 
 
 
+    const chooseVoice = (name) => {
+        setSelectedVoice(name)
+        if (name) handleWPMChange(startingWpm(pacesRef.current, name, paceKindOf(name)))
+    }
+
     useEffect(() => {
         const loadVoices = () => {
-            const compatibleVoices = usableSystemVoices(speechSynthesis.getVoices() || [])
+            const compatibleVoices = usableSystemVoices(systemSpeech.getVoices() || [])
             setNotification('')
 
             if (compatibleVoices.length > 0) {
@@ -233,8 +279,8 @@ export function useSequencer(initialText = '') {
 
         setCurrentWPM(rateToWPM(playbackRate))
         loadVoices()
-        speechSynthesis.onvoiceschanged = loadVoices
-        return () => { speechSynthesis.onvoiceschanged = null }
+        systemSpeech.onvoiceschanged = loadVoices
+        return () => { systemSpeech.onvoiceschanged = null }
     }, [])
 
 
@@ -244,7 +290,7 @@ export function useSequencer(initialText = '') {
     useEffect(() => {
         if (!text.trim()) {
             if (isPlayingRef.current) {
-                speechSynthesis.cancel()
+                systemSpeech.cancel()
                 stopWordTimer()
                 setIsPlaying(false)
                 setIsPaused(false)
@@ -260,10 +306,8 @@ export function useSequencer(initialText = '') {
             return
         }
 
-        const sentenceArray = text.match(/[^.!?]+[.!?]+/g) || [text]
-        setSentences(sentenceArray.map(s => s.trim()).filter(s => s.length > 0))
-
         const wordArray = text.split(/\s+/).filter(word => word.length > 0)
+        setSentences(buildSpeechUnits(text).sentences.map(([from, to]) => wordArray.slice(from, to + 1).join(' ')))
         setWords(wordArray)
 
         const paragraphArray = text.split(/\n{2,}/).filter(p => p.trim().length > 0)
@@ -275,10 +319,15 @@ export function useSequencer(initialText = '') {
         const lengthDiff = Math.abs(text.length - (currentTextRef.current?.length || 0))
         const isMassiveChange = currentTextRef.current && lengthDiff > Math.max(1000, currentTextRef.current.length * 0.6)
         
-        const targetIndex = (wasEmpty || isMassiveChange) ? 0 : Math.min(currentWordIndexRef.current, Math.max(0, wordArray.length - 1))
+        const pendingPlace = pendingPlaceRef.current
+        pendingPlaceRef.current = null
+        const targetIndex = pendingPlace
+            ? resolveSavedWord(wordArray, pendingPlace)
+            : (wasEmpty || isMassiveChange) ? 0 : Math.min(currentWordIndexRef.current, Math.max(0, wordArray.length - 1))
         
         setCurrentWordIndex(targetIndex)
         currentWordIndexRef.current = targetIndex
+        if (pendingPlace && targetIndex > 0) setRestoreTick((n) => n + 1)
 
         if (isPlayingRef.current && !isPausedRef.current) {
             debouncedSettingsChangeRef.current?.()
@@ -345,7 +394,7 @@ export function useSequencer(initialText = '') {
 
 
         if (hadKeyboardSeek && targetIndex !== null && isPlayingRef.current && !isPausedRef.current) {
-            speechSynthesis.cancel()
+            systemSpeech.cancel()
             setTimeout(() => {
                 if (isPlayingRef.current && !isPausedRef.current) {
                     startSequencer(targetIndex)
@@ -415,7 +464,7 @@ export function useSequencer(initialText = '') {
         if (isPlaying && !isPaused) {
             speedChangeTimerRef.current = setTimeout(() => {
                 if (!isPlayingRef.current || isPausedRef.current) return
-                speechSynthesis.cancel()
+                systemSpeech.cancel()
                 setTimeout(() => {
                     if (!isPlayingRef.current || isPausedRef.current) return
                     startSequencer(currentWordIndexRef.current)
@@ -447,7 +496,7 @@ export function useSequencer(initialText = '') {
 
         if (isPlaying && !isPaused) {
             const timer = setTimeout(() => {
-                speechSynthesis.cancel()
+                systemSpeech.cancel()
                 setTimeout(() => {
                     if (isPlaying && !isPaused) {
                         startSequencer(newWordIndex)
@@ -637,6 +686,9 @@ export function useSequencer(initialText = '') {
         if (!piperAudioRef.current) {
             const audio = new Audio()
             audio.preload = 'auto'
+            audio.preservesPitch = true
+            audio.mozPreservesPitch = true
+            audio.webkitPreservesPitch = true
             piperAudioRef.current = audio
         }
         return piperAudioRef.current
@@ -698,7 +750,13 @@ export function useSequencer(initialText = '') {
         if (token !== piperTokenRef.current || !isPlayingRef.current) { URL.revokeObjectURL(url); return }
         const exact = made.timings && made.timings.length === chunkWords.length ? made.timings : null
         const timings = exact || wordTimings(chunkWords, audio.duration || 0)
-        const rateNow = () => (chunk.rate || 1.0) * currentPlaybackRateRef.current
+        const paceId = currentSelectedVoiceRef.current
+        const rateNow = () => (chunk.rate || 1.0) * voiceSpeed(paceId).rate
+        const measure = async () => {
+            const seconds = isCloudVoice(paceId) ? speechSpan(exact, audio.duration) : (audibleSeconds(await made.blob.arrayBuffer()) || audio.duration)
+            learnPace(paceId, { words: chunkWords.length, seconds })
+        }
+        measure().catch(() => { })
         const volumeNow = () => Math.max(0, Math.min(1, volumeRef.current ?? 1))
         let lastIdx = -1
         const tick = () => {
@@ -761,12 +819,25 @@ export function useSequencer(initialText = '') {
         const chunk = queue[index]
 
         if (chunk.isSilent) {
+            const skipped = chunk.wordIndex !== undefined && !keyboardSeekActiveRef.current ? chunk.skippedWords || 0 : 0
+            const duration = skipped ? Math.min(SKIP_PASS_MAX_MS, Math.max(chunk.pause, skipped * SKIP_PASS_WORD_MS)) : chunk.pause
+            if (skipped) {
+                const ownerToken = piperTokenRef.current
+                for (let k = 0; k < skipped; k++) {
+                    setTimeout(() => {
+                        if (ownerToken !== piperTokenRef.current || !isPlayingRef.current || isPausedRef.current) return
+                        const di = toDisplayWord(chunk.wordIndex + k)
+                        setCurrentWordIndex(di)
+                        currentWordIndexRef.current = di
+                    }, Math.floor((k * duration) / skipped))
+                }
+            }
             setTimeout(() => {
                 if (!isPlayingRef.current || isPausedRef.current) return
                 queueIndexRef.current++
                 setQueueIndex(queueIndexRef.current)
                 playNextChunk()
-            }, chunk.pause)
+            }, duration)
             return
         }
 
@@ -776,7 +847,7 @@ export function useSequencer(initialText = '') {
             currentWordIndexRef.current = di
         }
 
-        speechSynthesis.cancel()
+        systemSpeech.cancel()
 
         const synth = synthFor(chunk, { urgent: true })
         if (synth) {
@@ -786,7 +857,13 @@ export function useSequencer(initialText = '') {
             return
         }
 
-        const utterance = new SpeechSynthesisUtterance(chunk.text)
+        const utterance = createUtterance(chunk.text)
+        if (!utterance) {
+            setIsPlaying(false)
+            isPlayingRef.current = false
+            setBuffering(false)
+            return
+        }
 
         const voiceList = currentVoicesRef.current?.length ? currentVoicesRef.current : voices
         let voice = currentSelectedVoiceRef.current
@@ -803,7 +880,7 @@ export function useSequencer(initialText = '') {
         const paceKey = voice?.name || 'default'
 
         utterance.pitch = chunk.pitch || 1.0
-        let effectiveRate = (chunk.rate || 1.0) * currentPlaybackRateRef.current
+        let effectiveRate = (chunk.rate || 1.0) * voiceSpeed(paceKey).rate
         if (chunk.lang === 'ar' && chunk.text.trim().split(/\s+/).length <= 2) {
             effectiveRate = 1.0
         }
@@ -815,6 +892,8 @@ export function useSequencer(initialText = '') {
         const speechToken = piperTokenRef.current
         let lastBoundaryAt = chunkStartedAt
         let boundariesSeen = 0
+        let firstBoundaryMark = null
+        let lastBoundaryMark = null
         const chunkSpokenWords = chunk.text.trim().split(/\s+/).filter(Boolean).length
 
         utterance.onboundary = (event) => {
@@ -832,6 +911,11 @@ export function useSequencer(initialText = '') {
             lastBoundaryAt = Date.now()
             const spokenPart = chunk.text.slice(0, event.charIndex)
             const wordsBefore = spokenPart.trim().split(/\s+/).filter(Boolean).length
+            if (event.name !== 'sentence') {
+                const mark = { at: performance.now(), words: wordsBefore }
+                if (!firstBoundaryMark) firstBoundaryMark = mark
+                lastBoundaryMark = mark
+            }
             const absoluteWordIndex = toDisplayWord(chunk.wordIndex + wordsBefore)
 
             if (absoluteWordIndex >= 0 && absoluteWordIndex < words.length) {
@@ -842,7 +926,7 @@ export function useSequencer(initialText = '') {
             if (pendingSeamlessRef.current) {
                 pendingSeamlessRef.current = false
                 beginManualSeekIntent(140)
-                speechSynthesis.cancel()
+                systemSpeech.cancel()
                 setTimeout(() => {
                     if (!isPlayingRef.current || isPausedRef.current) return
                     startSequencer(currentWordIndexRef.current)
@@ -860,10 +944,7 @@ export function useSequencer(initialText = '') {
                 const now = Date.now()
                 if (boundariesSeen >= 3) return
                 if (now - lastBoundaryAt < (boundariesSeen > 0 ? 900 : 450)) return
-                const knownPace = voiceWordsPerSecRef.current[paceKey]
-                const wordsPerSec = knownPace
-                    ? knownPace * utterance.rate
-                    : Math.max(1, currentWPMRef.current / 60)
+                const wordsPerSec = (naturalWpm(pacesRef.current, paceKey, paceKindOf(paceKey)) / 60) * utterance.rate
                 const estimated = Math.min(
                     chunkSpokenWords - 1,
                     Math.floor(((now - chunkStartedAt) / 1000) * wordsPerSec),
@@ -884,13 +965,15 @@ export function useSequencer(initialText = '') {
             pendingSeamlessRef.current = false
 
             const elapsedSec = (Date.now() - chunkStartedAt) / 1000
-            if (chunkSpokenWords >= 3 && elapsedSec > 0.6 && !isPausedRef.current) {
-                const normalized = chunkSpokenWords / elapsedSec / (utterance.rate || 1)
-                if (normalized > 0.4 && normalized < 6) {
-                    const prev = voiceWordsPerSecRef.current[paceKey]
-                    voiceWordsPerSecRef.current[paceKey] = prev
-                        ? prev * 0.65 + normalized * 0.35
-                        : normalized
+            if (!isPausedRef.current && elapsedSec > 0.6) {
+                if (boundariesSeen >= 3 && firstBoundaryMark && lastBoundaryMark) {
+                    learnPace(paceKey, {
+                        words: lastBoundaryMark.words - firstBoundaryMark.words,
+                        seconds: (lastBoundaryMark.at - firstBoundaryMark.at) / 1000,
+                        rate: utterance.rate,
+                    })
+                } else {
+                    learnPace(paceKey, { words: chunkSpokenWords, seconds: elapsedSec, rate: utterance.rate })
                 }
             }
 
@@ -922,7 +1005,7 @@ export function useSequencer(initialText = '') {
         setCurrentUtterance(utterance)
         utterance.onstart = () => { started = true; setBuffering(false); chunkStartedAt = Date.now(); lastBoundaryAt = chunkStartedAt }
         setBuffering(true)
-        speechSynthesis.speak(utterance)
+        systemSpeech.speak(utterance)
     }
 
     const warmedVoicesRef = useRef(new Set())
@@ -936,11 +1019,12 @@ export function useSequencer(initialText = '') {
             const voice = list.find((v) => (v.lang || '').toLowerCase().startsWith(prefix))
             if (!voice || warmedVoicesRef.current.has(voice.name)) continue
             warmedVoicesRef.current.add(voice.name)
-            const u = new SpeechSynthesisUtterance('.')
+            const u = createUtterance('.')
+            if (!u) continue
             u.voice = voice
             u.volume = 0
             u.rate = 2
-            try { speechSynthesis.speak(u) } catch { }
+            try { systemSpeech.speak(u) } catch { }
         }
     }
 
@@ -953,7 +1037,7 @@ export function useSequencer(initialText = '') {
             if (dead) return
             overridesRef.current = map
             keepSpellingsRef.current = protectedSpellings(map)
-        })
+        }).catch(() => {})
         return () => { dead = true }
     }, [text])
 
@@ -970,7 +1054,7 @@ export function useSequencer(initialText = '') {
             only: readMixedVoices() ? null : detectLanguage(activeText),
         })
         const selected = currentSelectedVoiceRef.current
-        const queue = isCloudVoice(selected) ? mergeShortChunks(lines) : isPiperVoice(selected) ? splitLongChunks(lines) : lines
+        const queue = isCloudVoice(selected) ? mergeShortChunks(lines) : isPiperVoice(selected) ? splitLongChunks(mergeLoneShortChunks(lines)) : lines
         return { queue, model, safeStartIndex }
     }
 
@@ -1029,9 +1113,10 @@ export function useSequencer(initialText = '') {
     const pause = () => {
         if (isPlaying && !isPaused) {
             beginManualSeekIntent(120)
-            speechSynthesis.cancel()
+            systemSpeech.cancel()
             const audio = piperAudioRef.current
             piperHoldRef.current = audio && !audio.paused && !audio.ended ? piperTokenRef.current : -1
+            piperHoldWordRef.current = currentWordIndexRef.current
             audio?.pause()
             setIsPaused(true)
             isPausedRef.current = true
@@ -1041,8 +1126,17 @@ export function useSequencer(initialText = '') {
     const resume = () => {
         if (!isPaused) return
         const audio = piperAudioRef.current
-        if (audio && piperHoldRef.current === piperTokenRef.current && audio.src && !audio.ended) {
+        const heldAudioIsCurrent = audio && canResumeHeldAudio({
+            holdToken: piperHoldRef.current,
+            currentToken: piperTokenRef.current,
+            heldWordIndex: piperHoldWordRef.current,
+            currentWordIndex: currentWordIndexRef.current,
+            hasSource: audio.src,
+            ended: audio.ended
+        })
+        if (heldAudioIsCurrent) {
             piperHoldRef.current = -1
+            piperHoldWordRef.current = -1
             setIsPaused(false)
             isPausedRef.current = false
             setIsPlaying(true)
@@ -1077,7 +1171,7 @@ export function useSequencer(initialText = '') {
     }
 
     const restartFromTop = () => {
-        speechSynthesis.cancel()
+        systemSpeech.cancel()
         setCurrentWordIndex(0)
         currentWordIndexRef.current = 0
         setUserSetPosition(true)
@@ -1095,8 +1189,10 @@ export function useSequencer(initialText = '') {
     }
 
     const stop = () => {
-        speechSynthesis.cancel()
+        systemSpeech.cancel()
         piperTokenRef.current++
+        piperHoldRef.current = -1
+        piperHoldWordRef.current = -1
         piperAudioRef.current?.pause()
         stopWordTimer()
         clearInterval(boundaryFallbackRef.current)
@@ -1121,7 +1217,7 @@ export function useSequencer(initialText = '') {
         setIsNavigating(false)
 
         if (isPlaying && !isPaused) {
-            speechSynthesis.cancel()
+            systemSpeech.cancel()
             setTimeout(() => startSequencer(safeIndex), 40)
         }
     }
@@ -1147,7 +1243,7 @@ export function useSequencer(initialText = '') {
 
     useEffect(() => {
         if (currentUtterance && isPlaying && !isPaused && !isSpeedChanging && !isNavigating) {
-            speechSynthesis.cancel()
+            systemSpeech.cancel()
             const timeoutId = setTimeout(() => {
                 if (isPlaying && !isPaused) {
                     startSequencer(currentWordIndex)
@@ -1257,7 +1353,7 @@ export function useSequencer(initialText = '') {
         }
 
         if (bestVoice && bestVoice.name !== currentSelectedVoiceRef.current) {
-            setSelectedVoice(bestVoice.name)
+            chooseVoice(bestVoice.name)
             currentSelectedVoiceRef.current = bestVoice.name
             return bestVoice.name
         }
@@ -1292,7 +1388,9 @@ export function useSequencer(initialText = '') {
         if (pages.length <= 10) {
             const all = joinPages(pages)
             setPendingRange(null)
-            const lp = pages.map((p) => ({ pageNum: p.pageNum, count: (p.text || '').trim().split(/\s+/).filter(Boolean).length, blocks: blockCounts(p) }))
+            const place = savedPlaceFor(getDocWord(docIdRef.current), pages[0]?.pageNum ?? 1)
+            if (place) pendingPlaceRef.current = place
+            const lp = pages.map((p) => ({ pageNum: p.pageNum, count: (p.text || '').trim().split(/\s+/).filter(Boolean).length, blocks: blockCounts(p), tables: p.tables }))
             loadedPagesRef.current = lp
             setLoadedPages(lp)
             setText(all)
@@ -1304,11 +1402,14 @@ export function useSequencer(initialText = '') {
             )
             setTimeout(() => setNotification(''), 3000)
         } else {
-            const saved = getDocRange(`${fileName}:${totalChars}`)
+            const saved = getDocRange(docIdRef.current)
+            const lastPlace = getDocWord(docIdRef.current)
+            const placeRange = lastPlace && lastPlace.word > 0 ? { from: lastPlace.from, to: lastPlace.to } : null
+            openingPlaceRef.current = placeRange ? lastPlace : null
             const clampPage = (n) => Math.max(1, Math.min(pages.length, n || 1))
 
 
-            const range = resuming && typeof resuming === 'object' ? resuming : (resuming && saved ? saved : null)
+            const range = placeRange || (resuming && typeof resuming === 'object' ? resuming : (resuming && saved ? saved : null))
             if (range) {
 
                 loadPageRange(clampPage(range.from), clampPage(range.to), pages)
@@ -1330,7 +1431,9 @@ export function useSequencer(initialText = '') {
                     ? clampPage(Math.min(saved.to, saved.from + OCR_MAX_WINDOW - 1))
                     : saved ? clampPage(saved.to) : null
                 const bm = readBookmarks()[docIdRef.current]
-                const opening = bm
+                const opening = placeRange
+                    ? { from: clampPage(placeRange.from), to: clampPage(placeRange.to) }
+                    : bm
                     ? { from: clampPage(bm), to: clampPage(bm + (scannedDoc ? OCR_FIRST_WINDOW : 10) - 1) }
                     : saved
                         ? { from: clampPage(saved.from), to: savedTo }
@@ -1345,6 +1448,7 @@ export function useSequencer(initialText = '') {
 
     const ocrFillPages = async (pdf, pages, nums) => {
         if (!nums.length) return pages
+        const ocrRun = ++ocrRunRef.current
         setOcrBusy({ done: 0, total: nums.length, pages: nums })
         try {
             const progress = (done, total) => {
@@ -1364,7 +1468,8 @@ export function useSequencer(initialText = '') {
                 const pg = await pdf.getPage(n)
                 const [, , pw, ph] = pg.view
                 const items = itemsMap[n] || []
-                byNum.set(n, pageFromItems(n, items, pw, ph, { rtl: detectRtlItems(items) }))
+                const built = { ...pageFromItems(n, items, pw, ph, { rtl: detectRtlItems(items) }), ocr: true }
+                byNum.set(n, isUnreadableCover(items, n) ? markPageSkippable(built) : built)
             }
             setNotification('')
             return pages.map((p) => byNum.get(p.pageNum) || p)
@@ -1374,12 +1479,16 @@ export function useSequencer(initialText = '') {
             setTimeout(() => setNotification(''), 5000)
             return pages
         } finally {
-            setOcrBusy(null)
+            if (ocrRun === ocrRunRef.current) setOcrBusy(null)
         }
     }
 
 
     const loadPageRange = async (start, end, pagesOverride) => {
+        const run = ++rangeRunRef.current
+        const superseded = () => run !== rangeRunRef.current
+        const openingPlace = openingPlaceRef.current
+        openingPlaceRef.current = null
         setRangeLoading(true)
         try {
             let pages = pagesOverride || docPages
@@ -1394,27 +1503,35 @@ export function useSequencer(initialText = '') {
                 const nums = scannedIn(lo, hi)
                 if (nums.length) {
                     pages = await ocrFillPages(pdf, pages, nums)
+                    if (superseded()) return false
                     setDocPages(pages)
                     setDocPagesRaw((prev) => (prev?.length ? prev.map((p) => pages.find((q) => q.pageNum === p.pageNum) || p) : prev))
                 }
                 const ahead = scannedIn(hi + 1, hi + OCR_AHEAD)
                 if (ahead.length) prefetchPages(pdf, ahead, docIdRef.current)
             }
+            if (pdf) {
+                const { OPS } = await import('pdfjs-dist/build/pdf.mjs')
+                const filled = await withTablePages(pdf, pages, lo, hi, OPS)
+                if (superseded()) return false
+                if (filled.fresh.size) {
+                    pages = filled.pages
+                    setDocPages(pages)
+                    setDocPagesRaw((prev) => (prev?.length ? prev.map((p) => (filled.fresh.has(p.pageNum) ? { ...carryAnnotations(p, filled.fresh.get(p.pageNum)), tableScan: true } : p)) : prev))
+                }
+            }
             const { text: rt, fromPage, toPage } = rangeText(pages, lo, hi)
             if (import.meta.env.DEV) console.log('[paperear] spoken text starts:', JSON.stringify(rt.slice(0, 200)))
-            const lp = pages.filter((p) => p.pageNum >= fromPage && p.pageNum <= toPage).map((p) => ({ pageNum: p.pageNum, count: (p.text || '').trim().split(/\s+/).filter(Boolean).length, blocks: blockCounts(p) }))
+            const lp = pages.filter((p) => p.pageNum >= fromPage && p.pageNum <= toPage).map((p) => ({ pageNum: p.pageNum, count: (p.text || '').trim().split(/\s+/).filter(Boolean).length, blocks: blockCounts(p), tables: p.tables }))
             loadedPagesRef.current = lp
             setPendingRange(null)
             setLoadedPages(lp)
+            const place = savedPlaceFor(openingPlace, fromPage)
+            if (place) pendingPlaceRef.current = place
             setText(rt.trim())
             autoSelectVoice(rt)
             warmVoicesForText(rt)
-            if (docMeta) saveDocRange(`${docMeta.fileName}:${docMeta.totalChars}`, fromPage, toPage)
-            const remembered = getDocWord(docIdRef.current)
-            if (remembered && remembered.from === fromPage && remembered.to === toPage && remembered.word > 0) {
-                setCurrentWordIndex(remembered.word)
-                currentWordIndexRef.current = remembered.word
-            }
+            if (docIdRef.current) saveDocRange(docIdRef.current, fromPage, toPage)
 
 
             try { const ls = JSON.parse(localStorage.getItem('paperear_last_source') || 'null'); if (ls && ls.kind === 'file') { ls.from = fromPage; ls.to = toPage; localStorage.setItem('paperear_last_source', JSON.stringify(ls)) } } catch { }
@@ -1424,8 +1541,15 @@ export function useSequencer(initialText = '') {
                     .replace('{{to}}', toPage)
             )
             setTimeout(() => setNotification(''), 3000)
+            return true
+        } catch (error) {
+            if (superseded()) return false
+            console.error('Page load error:', error)
+            setNotification(t('sequencer.rangeFailed', 'Those pages could not be loaded.'))
+            setTimeout(() => setNotification(''), 5000)
+            return false
         } finally {
-            setRangeLoading(false)
+            if (!superseded()) setRangeLoading(false)
         }
     }
 
@@ -1476,7 +1600,9 @@ export function useSequencer(initialText = '') {
         const withSkippable = dropChrome && entitledRef.current ? applySkippable(docPagesRaw, true) : docPagesRaw
         const active = dropChrome && entitledRef.current && docChrome.length ? applyChromeSkip(withSkippable, docChrome) : withSkippable
         setDocPages(active)
-        if (loadedPages.length) loadPageRange(loadedPages[0].pageNum, loadedPages[loadedPages.length - 1].pageNum, active)
+        if (loadedPages.length) {
+            loadPageRange(loadedPages[0].pageNum, loadedPages[loadedPages.length - 1].pageNum, active)
+        }
     }
 
     const wordCountOf = (p) => (p.text || '').trim().split(/\s+/).filter(Boolean).length
@@ -1512,8 +1638,8 @@ export function useSequencer(initialText = '') {
         stop()
         if (wasPlaying) setContinuing(true)
         const openedAt = openGenRef.current
-        Promise.resolve(loadPageRange(nf, nt)).then(() => {
-            if (openedAt !== openGenRef.current) { setContinuing(false); return }
+        Promise.resolve(loadPageRange(nf, nt)).then((loaded) => {
+            if (openedAt !== openGenRef.current || loaded === false) { setContinuing(false); return }
             clearTimeout(shiftTimerRef.current)
             shiftTimerRef.current = setTimeout(() => {
                 if (openedAt !== openGenRef.current) { setContinuing(false); return }
@@ -1556,6 +1682,11 @@ export function useSequencer(initialText = '') {
 
     const handleFileUpload = async (file) => {
         if (!file) return
+        const loadGen = ++loadGenRef.current
+        pendingPlaceRef.current = null
+        const superseded = () => loadGen !== loadGenRef.current
+        rangeRunRef.current += 1
+        setRangeLoading(false)
         setDocLoading({ name: file.name })
         if (docPdfRef.current || loadedPagesRef.current.length || currentTextRef.current.trim()) {
             openGenRef.current += 1
@@ -1582,24 +1713,36 @@ export function useSequencer(initialText = '') {
         if (name.endsWith('.md') || name.endsWith('.markdown') || file.type === 'text/markdown') {
             const reader = new FileReader()
             reader.onload = (e) => {
+                if (superseded()) return
                 setDocPdf(null)
                 docPdfRef.current = null
                 const { pages } = buildPagesFromMarkdown(e.target.result)
                 ingest(pages, file.name)
                 rememberFile(file)
             }
-            reader.onerror = () => setDocLoading(null)
+            reader.onerror = () => {
+                if (superseded()) return
+                setDocLoading(null)
+                setNotification(t('sequencer.fileFailed', 'This file could not be opened.'))
+                setTimeout(() => setNotification(''), 5000)
+            }
             reader.readAsText(file)
         } else if (file.type === 'text/plain' || name.endsWith('.txt')) {
             const reader = new FileReader()
             reader.onload = (e) => {
+                if (superseded()) return
                 setDocPdf(null)
                 docPdfRef.current = null
                 const { pages } = buildPagesFromText(e.target.result)
                 ingest(pages, file.name)
                 rememberFile(file)
             }
-            reader.onerror = () => setDocLoading(null)
+            reader.onerror = () => {
+                if (superseded()) return
+                setDocLoading(null)
+                setNotification(t('sequencer.fileFailed', 'This file could not be opened.'))
+                setTimeout(() => setNotification(''), 5000)
+            }
             reader.readAsText(file)
         } else if (file.type === 'application/pdf' || name.endsWith('.pdf')) {
                                     try {
@@ -1619,21 +1762,27 @@ export function useSequencer(initialText = '') {
                     standardFontDataUrl: new URL('pdfjs/standard_fonts/', window.location.origin + import.meta.env.BASE_URL).href,
                     isEvalSupported: false,
                 }).promise
+                if (superseded()) { pdf.destroy?.(); return }
                 setDocPdf(pdf)
                 docPdfRef.current = pdf
                 docIdRef.current = `${file.name}:${file.size}`
                 setOcrItemsByPage({})
                 setBookmark(readBookmarks()[docIdRef.current] ?? null)
 
-                let { pages } = await buildPagesFromPdf(pdf, (done, total) => { if (done % 20 === 0 || done === total) setDocLoading({ name: file.name, done, total }) })
+                let { pages } = await buildPagesFromPdf(pdf, (done, total) => { if (!superseded() && (done % 20 === 0 || done === total)) setDocLoading({ name: file.name, done, total }) }, pdfjsModule.OPS)
+                if (superseded()) return
                 if (import.meta.env.DEV) console.log('[paperear] parsed', pages.length, 'pages | needing OCR:', pages.filter(isScannedPage).length, '| p5 chars:', pages[4]?.charCount)
                 if (pages.length <= 10) {
                     const nums = pages.filter(isScannedPage).map((p) => p.pageNum)
                     if (nums.length) pages = await ocrFillPages(pdf, pages, nums)
+                    if (superseded()) return
+                    pages = (await withTablePages(pdf, pages, 1, pages.length, pdfjsModule.OPS)).pages
+                    if (superseded()) return
                 }
                 ingest(pages, file.name)
                 rememberFile(file)
             } catch (err) {
+                if (superseded()) return
                 console.error('PDF Error:', err)
                 setDocLoading(null)
                 setNotification(t('sequencer.failedPdf', 'Failed to load PDF. Is it encrypted?'))
@@ -1643,6 +1792,7 @@ export function useSequencer(initialText = '') {
             try {
                 setNotification(t('sequencer.loadingFile', 'Opening {{file}}…').replace('{{file}}', file.name))
                 const markdown = isEpub(file) ? await textFromEpub(file) : await textFromDocx(file)
+                if (superseded()) return
                 setDocPdf(null)
                 docPdfRef.current = null
                 docIdRef.current = `${file.name}:${file.size}`
@@ -1650,6 +1800,7 @@ export function useSequencer(initialText = '') {
                 ingest(pages, file.name)
                 rememberFile(file)
             } catch (err) {
+                if (superseded()) return
                 setDocLoading(null)
                 setNotification(err?.message || t('sequencer.fileFailed', 'This file could not be opened.'))
                 setTimeout(() => setNotification(''), 5000)
@@ -1694,6 +1845,9 @@ export function useSequencer(initialText = '') {
 
     const closeDocument = () => {
         openGenRef.current += 1
+        loadGenRef.current += 1
+        rangeRunRef.current += 1
+        setRangeLoading(false)
         clearTimeout(shiftTimerRef.current)
         setContinuing(false)
         setDocLoading(null)
@@ -1789,7 +1943,7 @@ export function useSequencer(initialText = '') {
         const lp = loadedPagesRef.current
         if (!docIdRef.current || !lp.length || currentWordIndex <= 0) return undefined
         const timer = setTimeout(
-            () => saveDocWord(docIdRef.current, lp[0].pageNum, lp[lp.length - 1].pageNum, currentWordIndex),
+            () => saveDocWord(docIdRef.current, lp[0].pageNum, lp[lp.length - 1].pageNum, currentWordIndex, anchorAt(currentWordsRef.current, currentWordIndex)),
             800,
         )
         return () => clearTimeout(timer)
@@ -1802,7 +1956,7 @@ export function useSequencer(initialText = '') {
     useEffect(() => {
         const stopSpeechOnPageExit = (syncState = true) => {
             try {
-                speechSynthesis.cancel()
+                systemSpeech.cancel()
             } catch (_) {
 
             }
@@ -1860,12 +2014,14 @@ export function useSequencer(initialText = '') {
         voices,
         selectedVoice,
         setSelectedVoice,
+        chooseVoice,
 
 
         currentWPM,
         playbackRate,
         handleWPMChange,
         wpmToRate,
+        speedLimit,
 
 
         speak,
@@ -1873,6 +2029,7 @@ export function useSequencer(initialText = '') {
         resume,
         stop,
         jumpToWord,
+        restoreTick,
         scrollToCurrentWord,
         setCurrentWordIndexFromAudio,
 
@@ -1932,6 +2089,7 @@ export function useSequencer(initialText = '') {
         continuing,
         rangeLoading,
         docLoading,
+        documentBusy: documentBusyReason({ docLoading, ocrBusy, rangeLoading }),
 
 
         currentTextRef,

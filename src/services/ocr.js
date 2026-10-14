@@ -1,8 +1,8 @@
 import { basmalaItemsForPage } from '../utils/basmala.js'
 import { buildLexicon, correctItems, curatedEvidence, matchesCuratedSkeleton } from '../engine/scan.js'
-import { splitLayerItems } from '../utils/pageModel.js'
+import { splitLayerItems, isScannedPage } from '../utils/pageModel.js'
 import { repairUnmappedGlyphs } from '../utils/ligatures.js'
-import { cleanOcrItems, leadScript } from '../utils/ocrClean.js'
+import { cleanOcrItems, confidentWords, leadScript } from '../utils/ocrClean.js'
 
 const DB_NAME = 'paperear_ocr'
 const STORE = 'pages'
@@ -269,6 +269,15 @@ async function recognizeUncached(pdf, pageNum, docId) {
 }
 
 let jobToken = 0
+const recognizing = new Map()
+
+function recognizeOnce(pdf, pageNum, docId) {
+    const key = `${docId}:${pageNum}`
+    if (recognizing.has(key)) return recognizing.get(key)
+    const job = recognizeUncached(pdf, pageNum, docId).finally(() => recognizing.delete(key))
+    recognizing.set(key, job)
+    return job
+}
 
 export async function prefetchPages(pdf, pageNums, docId) {
     const token = jobToken
@@ -276,7 +285,7 @@ export async function prefetchPages(pdf, pageNums, docId) {
         if (jobToken !== token) return
         try {
             if (await getCached(docId, n)) continue
-            await recognizeUncached(pdf, n, docId)
+            await recognizeOnce(pdf, n, docId)
         } catch { return }
     }
 }
@@ -294,13 +303,14 @@ export async function recognizePages(pdf, pageNums, docId, onProgress) {
                 if (d) docLangs.set(docId, d)
             }
         } else {
-            out[n] = await recognizeUncached(pdf, n, docId)
+            out[n] = await recognizeOnce(pdf, n, docId)
         }
         done += 1
         if (onProgress) onProgress(done, pageNums.length)
     }
     const curated = curatedEvidence(Object.values(out)) >= 2
-    for (const n of Object.keys(out)) out[n] = cleanOcrItems(out[n], { vouch: curated ? matchesCuratedSkeleton : () => false })
+    const known = confidentWords(Object.values(out))
+    for (const n of Object.keys(out)) out[n] = cleanOcrItems(out[n], { vouch: curated ? matchesCuratedSkeleton : () => false, known })
     const lexicon = buildLexicon(Object.values(out))
     const allChanges = []
     for (const n of Object.keys(out)) {
@@ -318,4 +328,4 @@ export async function recognizePages(pdf, pageNums, docId, onProgress) {
     return out
 }
 
-export const isScannedPage = (p) => (p?.charCount || 0) < 20
+export { isScannedPage }

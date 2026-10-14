@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useMemo, useState } from 'react'
 import { NavLink, Outlet, Link, useNavigate } from 'react-router-dom'
 import { NAV_ITEMS, APP_NAME } from '../../utils/constants'
 import { useTranslation } from 'react-i18next'
@@ -14,6 +14,11 @@ import './AppShell.css'
 export default function AppShell() {
     const { t, i18n } = useTranslation()
     const navigate = useNavigate()
+    const [tunerReady, setTunerReady] = useState(false)
+    const [tunerOpen, setTunerOpen] = useState(false)
+    const tuner = useMemo(() => ({ ready: tunerReady, open: tunerOpen && tunerReady, setReady: setTunerReady, setOpen: setTunerOpen }), [tunerReady, tunerOpen])
+    const tuneLabel = t('nav.tune', 'Tune')
+    const tuneTitle = tunerReady ? tuneLabel : t('nav.tuneLocked', 'Open a document or write some text to tune the reading')
 
     return (
         <div className="app-shell">
@@ -48,7 +53,20 @@ export default function AppShell() {
                             <span className="shell-nav-label">{t(`nav.${item.key}`, item.label)}</span>
                         </NavLink>
                     ))}
-                    
+                    <button
+                        type="button"
+                        className={'shell-nav-item shell-nav-item--action' + (tuner.open ? ' shell-nav-item--active' : '') + (tunerReady ? '' : ' shell-nav-item--locked')}
+                        data-tune-toggle=""
+                        aria-disabled={!tunerReady}
+                        aria-expanded={tunerReady ? tuner.open : undefined}
+                        aria-label={tuneTitle}
+                        title={tuneTitle}
+                        onClick={() => { if (tunerReady) setTunerOpen((open) => !open) }}
+                    >
+                        <span className="shell-nav-icon"><Icon name="tune" /></span>
+                        <span className="shell-nav-label">{tuneLabel}</span>
+                    </button>
+
                     <div className="shell-nav-foot">
                         <ThemeSwitcher />
                     </div>
@@ -58,8 +76,8 @@ export default function AppShell() {
             </aside>
 
             {/* Main Content */}
-            <main className="shell-main">
-                <Outlet />
+            <main className={'shell-main' + (tuner.open ? ' shell-main--tuned' : '')}>
+                <Outlet context={{ tuner }} />
             </main>
         </div>
     )

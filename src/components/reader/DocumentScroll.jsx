@@ -8,24 +8,28 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import PageOverlay from './PageOverlay'
 import WordBar from './WordBar'
-import ZoomControl from './ZoomControl'
 import Busy from '../Busy'
-import { DOC_ZOOM_LEVELS, stepZoom } from '../../utils/zoomSteps'
 import { detectLanguage, isRtl } from '../../utils/languageDetector'
 import { buildPageList, pageAtScroll } from '../../utils/documentPages'
 import RangeBox from './RangeBox'
 import DocumentPanel from './DocumentPanel'
+import useViewAnchor from '../../hooks/useViewAnchor'
+import { dockCoverFor } from '../../utils/dockLayout'
 import './DocumentScroll.css'
 
 const OVERSCAN = 1
 
 export default function DocumentScroll({
+    zoom = 1,
+    dockOpen = false,
     pdf,
     pagedView,
     loadedPages = null,
     currentWordIndex = -1,
+    band = null,
     onWordClick,
     jumpTick = 0,
+    restoreTick = 0,
     ocrItemsByPage = null,
     bookmarkedPage = null,
     onToggleBookmark = null,
@@ -77,7 +81,6 @@ export default function DocumentScroll({
     const [viewportH, setViewportH] = useState(0)
     const [pageDims, setPageDims] = useState(null)
     const [proxies, setProxies] = useState({})
-    const [zoom, setZoom] = useState(1)
     const [perRow, setPerRow] = useState(1)
     const [panelOpen, setPanelOpen] = useState(false)
 
@@ -130,9 +133,7 @@ export default function DocumentScroll({
     const colOf = (i) => i % perRow
     const colWidth = containerWidth ? (containerWidth - 8 - (perRow - 1) * GAP) / perRow : 0
     const fitWidth = colWidth && pageDims?.[0] ? colWidth / pageDims[0].w : 1
-    const scale = zoom === 'page'
-        ? Math.min(fitWidth, pageDims?.[0] && viewportH ? (viewportH - GAP - 10) / pageDims[0].h : fitWidth)
-        : fitWidth * zoom
+    const scale = fitWidth * zoom
     const heights = useMemo(
         () => (pageDims || []).map((d) => d.h * scale + GAP),
         [pageDims, scale],
@@ -206,7 +207,9 @@ export default function DocumentScroll({
         containerRef.current?.querySelector('.page-overlay__hl:not([style*="display: none"])') ||
         containerRef.current?.querySelector('.page-overlay__word.is-current')
 
-    const centerOnCurrent = (threshold = 0) => {
+    const viewAnchor = useViewAnchor(`${zoom}|${dockOpen}`, { getScroller: () => containerRef.current, locate: currentWordEl, coverBottom: () => dockCoverFor(dockOpen) })
+
+    const centerOnCurrent = (threshold = 0, behavior = 'smooth') => {
         const el = containerRef.current
         if (!el) return
         const word = currentWordEl()
@@ -218,7 +221,7 @@ export default function DocumentScroll({
             const moveY = Math.abs(dy) > threshold
             const moveX = Math.abs(dx) > (threshold ? el.clientWidth * 0.12 : 0)
             if (!moveY && !moveX) return
-            const target = { behavior: 'smooth' }
+            const target = { behavior }
             if (moveY) target.top = el.scrollTop + dy
             if (moveX) target.left = el.scrollLeft + dx
             el.scrollTo(target)
@@ -230,7 +233,7 @@ export default function DocumentScroll({
         const ratio = Math.min(1, Math.max(0, (currentWordIndex - p.start) / span))
         const row = rowOf(currentSlot)
         const top = offsets[row] + (rowHeights[row] || 0) * ratio - viewportH * 0.5
-        const target = { top: Math.max(0, top), behavior: 'smooth' }
+        const target = { top: Math.max(0, top), behavior }
         if (el.scrollWidth > el.clientWidth) target.left = startEdgeLeft(el)
         el.scrollTo(target)
     }
@@ -260,7 +263,7 @@ export default function DocumentScroll({
     }
 
     useEffect(() => {
-        if (currentWordIndex < 0) return
+        if (currentWordIndex < 0 || viewAnchor.isSettling()) return
         if (followLockRef.current) {
             followCurrent()
             return
@@ -288,27 +291,26 @@ export default function DocumentScroll({
         centerOnCurrent()
     }, [jumpTick, currentSlot, offsets, rowHeights, pageList, currentWordIndex, viewportH, perRow])
 
-    const zoomSeen = useRef(zoom)
+    const restoreSeen = useRef(0)
     useEffect(() => {
-        if (zoomSeen.current === zoom) return
-        zoomSeen.current = zoom
-        const el = containerRef.current
-        if (!el) return
-        if (currentWordIndex < 0) {
-            el.scrollLeft = startEdgeLeft(el)
-            return
-        }
+        if (!restoreTick || restoreTick === restoreSeen.current) return undefined
+        restoreSeen.current = restoreTick
         followLockRef.current = true
-        let attempts = 0
-        let timer = 0
-        const attempt = () => {
-            const found = Boolean(currentWordEl())
-            centerOnCurrent()
-            if (!found && attempts++ < 5) timer = setTimeout(attempt, 200)
+        let frame = 0
+        let tries = 0
+        const settle = () => {
+            const ready = Boolean(currentWordEl())
+            if (ready || tries >= 90) {
+                if (ready) centerOnCurrent(0, 'instant')
+                return
+            }
+            tries += 1
+            if (tries === 30 || tries === 60) centerOnCurrent(0, 'instant')
+            frame = requestAnimationFrame(settle)
         }
-        timer = setTimeout(attempt, 80)
-        return () => clearTimeout(timer)
-    }, [zoom])
+        frame = requestAnimationFrame(settle)
+        return () => cancelAnimationFrame(frame)
+    }, [restoreTick])
 
     const panRef = useRef(null)
     const onPointerDown = (e) => {
@@ -420,16 +422,9 @@ export default function DocumentScroll({
                     <span>/ {totalPages}</span>
                 </div>
             )}
-            <ZoomControl
-                onIn={() => setZoom((z) => stepZoom(DOC_ZOOM_LEVELS, z, 1))}
-                onOut={() => setZoom((z) => stepZoom(DOC_ZOOM_LEVELS, z, -1))}
-                canIn={zoom !== DOC_ZOOM_LEVELS[DOC_ZOOM_LEVELS.length - 1]}
-                canOut={zoom !== DOC_ZOOM_LEVELS[0]}
-                label={zoom === 'page' ? 'Page' : zoom === 1 ? 'Fit' : `${zoom}×`}
-            />
         <div
             ref={containerRef}
-            className={'doc-scroll' + (zoom !== 'page' && zoom > 1 ? ' is-pannable' : '')}
+            className={'doc-scroll' + (zoom > 1 ? ' is-pannable' : '')}
             onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
             onWheel={breakLock}
             onTouchMove={breakLock}
@@ -439,11 +434,17 @@ export default function DocumentScroll({
             onPointerLeave={onPointerUp}
             onClickCapture={onClickCapture}
         >
-            <div className="doc-scroll__spacer" style={{ height: offsets.total || 0, width: zoom > 1 ? `${zoom * 100}%` : '100%' }}>
+            <div className="doc-scroll__spacer" style={{ height: offsets.total || 0, width: `${zoom * 100}%`, margin: zoom < 1 ? '0 auto' : undefined }}>
                 {pageList.map((p, i) => {
                     if (i < firstVisible || i > lastVisible)
                         return null
                     const proxy = proxies[p.pageNum]
+                    const pageBand = p.loaded && band && band.range[1] >= p.start && band.range[0] <= p.end
+                        ? {
+                            range: [band.range[0] - p.start, band.range[1] - p.start],
+                            short: band.short ? [band.short[0] - p.start, band.short[1] - p.start] : null,
+                        }
+                        : null
                     return (
                         <div
                             key={p.pageNum}
@@ -466,10 +467,14 @@ export default function DocumentScroll({
                                     pipelineBlocks={
                                         p.loaded ? loadedPages?.find((lp) => lp.pageNum === p.pageNum)?.blocks || null : null
                                     }
+                                    tables={
+                                        p.loaded ? loadedPages?.find((lp) => lp.pageNum === p.pageNum)?.tables || null : null
+                                    }
                                     currentReadingIndex={
                                         i === currentSlot ? currentWordIndex - p.start : -1
                                     }
                                     wordIndexBase={p.loaded ? p.start : -1}
+                                    band={pageBand}
                                     onWordClick={
                                         p.loaded && onWordClick
                                             ? (readingIdx) => {
